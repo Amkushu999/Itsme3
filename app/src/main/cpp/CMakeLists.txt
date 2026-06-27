@@ -2,14 +2,6 @@ cmake_minimum_required(VERSION 3.22.1)
 project("facegate" CXX)
 
 # ── FFmpeg prebuilt root directory ────────────────────────────────────────────
-#
-# Set via local.properties:  ffmpeg.dir=/path/to/ffmpeg-android
-# Or directly via CMake:     cmake -DFFMPEG_ROOT=...
-#
-# The GitHub Actions workflow (k71621438-cpu/ffmpeg-builder) places each ABI
-# at output/<ABI>/lib/ and output/<ABI>/include/, so the path resolves as:
-#   ${FFMPEG_ROOT}/${ANDROID_ABI}/lib/libavformat.a  (no /android/ middle dir)
-# ─────────────────────────────────────────────────────────────────────────────
 if(NOT DEFINED FFMPEG_ROOT)
     if(DEFINED ENV{FFMPEG_ROOT})
         set(FFMPEG_ROOT $ENV{FFMPEG_ROOT})
@@ -19,9 +11,6 @@ if(NOT DEFINED FFMPEG_ROOT)
     endif()
 endif()
 
-# FIX: path is ${FFMPEG_ROOT}/${ABI}, NOT ${FFMPEG_ROOT}/android/${ABI}
-# The old /android/ middle segment was inserted by the previous local build
-# script but the ffmpeg-builder CI writes directly to ${ABI}/.
 set(FFMPEG_ABI_DIR "${FFMPEG_ROOT}/${ANDROID_ABI}")
 
 if(NOT EXISTS "${FFMPEG_ABI_DIR}/lib")
@@ -32,7 +21,6 @@ if(NOT EXISTS "${FFMPEG_ABI_DIR}/lib")
 endif()
 
 # ── FFmpeg prebuilt static libs ───────────────────────────────────────────────
-
 foreach(_lib avformat avcodec avutil swresample swscale)
     add_library(${_lib} STATIC IMPORTED)
     set_target_properties(${_lib} PROPERTIES
@@ -41,15 +29,6 @@ foreach(_lib avformat avcodec avutil swresample swscale)
 endforeach()
 
 # ── libyuv from source ────────────────────────────────────────────────────────
-#
-# libyuv is compiled as part of the Android build from the checked-in source.
-# No separate prebuilt step is required — this removes the libyuv.dir
-# local.properties requirement and ensures the CI can build without extra setup.
-#
-# Clone with:
-#   git clone https://chromium.googlesource.com/libyuv/libyuv.git \
-#             app/src/main/cpp/libyuv-src
-# ─────────────────────────────────────────────────────────────────────────────
 set(LIBYUV_SRC_DIR "${CMAKE_SOURCE_DIR}/libyuv-src")
 
 if(NOT EXISTS "${LIBYUV_SRC_DIR}/include/libyuv.h")
@@ -64,14 +43,17 @@ add_library(yuv STATIC ${LIBYUV_SOURCES})
 target_include_directories(yuv PUBLIC "${LIBYUV_SRC_DIR}/include")
 target_compile_options(yuv PRIVATE -O3 -fPIC)
 
-# ── System libraries ──────────────────────────────────────────────────────────
+# FIX: Enable dotprod for arm64-v8a (required by libyuv's neon64 code)
+if(ANDROID_ABI STREQUAL "arm64-v8a")
+    target_compile_options(yuv PRIVATE -march=armv8.2-a+dotprod)
+endif()
 
+# ── System libraries ──────────────────────────────────────────────────────────
 find_library(log-lib     log)
 find_library(android-lib android)
 find_library(z-lib       z)
 
 # ── ffmpeg_decoder.so ─────────────────────────────────────────────────────────
-
 add_library(ffmpeg_decoder SHARED ffmpeg_decoder.cpp)
 
 target_include_directories(ffmpeg_decoder PRIVATE
@@ -90,7 +72,6 @@ target_link_libraries(ffmpeg_decoder
 target_compile_features(ffmpeg_decoder PRIVATE cxx_std_14)
 
 # ── libyuv_wrapper.so ─────────────────────────────────────────────────────────
-
 add_library(libyuv_wrapper SHARED libyuv_wrapper.cpp)
 
 target_include_directories(libyuv_wrapper PRIVATE
