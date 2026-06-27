@@ -12,14 +12,14 @@
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
 
 // ── Android ImageFormat Constants ─────────────────────────────────────────────
-static const int FMT_RGBA_8888   = 0x01;   // ImageFormat.RGBA_8888
-static const int FMT_RGB_565     = 0x04;   // ImageFormat.RGB_565
-static const int FMT_NV16        = 0x10;   // ImageFormat.NV16  (YUV 4:2:2)
-static const int FMT_NV21        = 0x11;   // ImageFormat.NV21
-static const int FMT_NV12        = 0x15;   // (no public constant — common value)
-static const int FMT_YUV_420_888 = 0x23;   // ImageFormat.YUV_420_888
+static const int FMT_RGBA_8888   = 0x01;
+static const int FMT_RGB_565     = 0x04;
+static const int FMT_NV16        = 0x10;
+static const int FMT_NV21        = 0x11;
+static const int FMT_NV12        = 0x15;
+static const int FMT_YUV_420_888 = 0x23;
 
-// ── Explicit Error Codes (mirrored in LibYuv.kt) ──────────────────────────────
+// ── Explicit Error Codes ──────────────────────────────────────────────────────
 static const int ERR_NULL_BUFFER     = -1;
 static const int ERR_UNSUPPORTED_FMT = -2;
 static const int ERR_DST_TOO_SMALL   = -3;
@@ -29,7 +29,6 @@ static const int ERR_SRC_TOO_SMALL   = -6;
 static const int ERR_OOM             = -7;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
 struct FreeDeleter { void operator()(void* p) const { std::free(p); } };
 using ScopedMalloc = std::unique_ptr<uint8_t, FreeDeleter>;
 
@@ -49,21 +48,12 @@ static int scaleI420(
         dstW, dstH, libyuv::kFilterBilinear);
 }
 
-// I420 plane sizes (4:2:0)
 static void getI420Sizes(int w, int h, size_t& ySize, size_t& uvSize) {
     ySize  = static_cast<size_t>(w) * h;
     uvSize = static_cast<size_t>((w + 1) / 2) * ((h + 1) / 2);
 }
 
-// NV16 plane sizes (4:2:2 — chroma NOT subsampled vertically)
-static void getNV16Sizes(int w, int h, size_t& ySize, size_t& uvSize) {
-    ySize  = static_cast<size_t>(w) * h;
-    // UV is interleaved, half width but FULL height
-    uvSize = static_cast<size_t>((w + 1) / 2) * 2 * h;
-}
-
 // ── JNI Export ────────────────────────────────────────────────────────────────
-
 extern "C"
 JNIEXPORT jint JNICALL
 Java_com_itsme_amkush_libyuv_LibYuv_convertInto(
@@ -114,15 +104,13 @@ Java_com_itsme_amkush_libyuv_LibYuv_convertInto(
         }
     }
 
-    // Output strides
     const int dstStrY     = dstW;
     const int dstStrUV    = (dstW + 1) / 2;
-    const int dstStrUV_NV = ((dstW + 1) / 2) * 2;  // interleaved UV stride
+    const int dstStrUV_NV = ((dstW + 1) / 2) * 2;
 
     size_t ySize = 0, uvSize = 0;
     size_t required = 0;
 
-    // ── Format-specific size calculation ──────────────────────────────────────
     switch (dstFmt) {
         case FMT_YUV_420_888:
         case FMT_NV21:
@@ -132,18 +120,17 @@ Java_com_itsme_amkush_libyuv_LibYuv_convertInto(
             break;
         }
         case FMT_NV16: {
-            // NV16 is 4:2:2 — UV plane is full height, interleaved
-            getNV16Sizes(dstW, dstH, ySize, uvSize);
-            required = ySize + uvSize;  // ySize + (width * height)
-            break;
+            // NV16 is 4:2:2 — not supported by libyuv
+            LOGE("convertInto: NV16 format not supported by libyuv");
+            return ERR_UNSUPPORTED_FMT;
         }
         case FMT_RGBA_8888:
             required = static_cast<size_t>(dstW) * dstH * 4;
-            ySize = required;  // reuse ySize as total size for offset math
+            getI420Sizes(dstW, dstH, ySize, uvSize);
             break;
         case FMT_RGB_565:
             required = static_cast<size_t>(dstW) * dstH * 2;
-            ySize = required;
+            getI420Sizes(dstW, dstH, ySize, uvSize);
             break;
         default:
             LOGE("convertInto: unsupported format 0x%x", dstFmt);
@@ -159,10 +146,10 @@ Java_com_itsme_amkush_libyuv_LibYuv_convertInto(
 
     int ret = 0;
     const bool needsScale = (srcW != dstW || srcH != dstH);
+    const size_t i420Size = ySize + 2 * uvSize;
 
     switch (dstFmt) {
 
-    // ── YUV_420_888 (tightly packed planar I420) ─────────────────────────────
     case FMT_YUV_420_888: {
         uint8_t* dY = dst;
         uint8_t* dU = dst + ySize;
@@ -175,9 +162,11 @@ Java_com_itsme_amkush_libyuv_LibYuv_convertInto(
             std::memcpy(dV, srcV, uvSize);
             ret = 0;
         } else if (!needsScale) {
+            // FIX: I420Copy takes exactly 14 arguments (removed srcW, srcH from middle)
             ret = libyuv::I420Copy(
-                srcY, srcStrideY, srcU, srcStrideU, srcV, srcStrideV, srcW, srcH,
-                dY, dstStrY, dU, dstStrUV, dV, dstStrUV, dstW, dstH);
+                srcY, srcStrideY, srcU, srcStrideU, srcV, srcStrideV,
+                dY, dstStrY, dU, dstStrUV, dV, dstStrUV,
+                srcW, srcH);
         } else {
             ret = scaleI420(srcY, srcStrideY, srcU, srcStrideU, srcV, srcStrideV,
                             srcW, srcH,
@@ -187,7 +176,6 @@ Java_com_itsme_amkush_libyuv_LibYuv_convertInto(
         break;
     }
 
-    // ── NV21, NV12 (4:2:0 interleaved) ────────────────────────────────────────
     case FMT_NV21:
     case FMT_NV12: {
         if (!needsScale) {
@@ -199,7 +187,7 @@ Java_com_itsme_amkush_libyuv_LibYuv_convertInto(
                                          dst, dstStrY, dst + ySize, dstStrUV_NV, dstW, dstH);
             }
         } else {
-            ScopedMalloc tmp(static_cast<uint8_t*>(std::malloc(ySize + 2 * uvSize)));
+            ScopedMalloc tmp(static_cast<uint8_t*>(std::malloc(i420Size)));
             if (!tmp) { LOGE("malloc failed"); return ERR_OOM; }
 
             uint8_t* tmpY = tmp.get();
@@ -224,54 +212,17 @@ Java_com_itsme_amkush_libyuv_LibYuv_convertInto(
         break;
     }
 
-    // ── NV16 (4:2:2 interleaved — chroma NOT subsampled vertically) ───────────
-    case FMT_NV16: {
-        if (!needsScale) {
-            // Direct conversion: I420 → NV16
-            ret = libyuv::I420ToNV16(srcY, srcStrideY, srcU, srcStrideU, srcV, srcStrideV,
-                                     dst, dstStrY, dst + ySize, dstStrUV_NV, dstW, dstH);
-        } else {
-            // Scale to I420 first, then convert to NV16
-            size_t i420YSize, i420UVSize;
-            getI420Sizes(dstW, dstH, i420YSize, i420UVSize);
-            size_t i420Total = i420YSize + 2 * i420UVSize;
-
-            ScopedMalloc tmp(static_cast<uint8_t*>(std::malloc(i420Total)));
-            if (!tmp) { LOGE("malloc failed"); return ERR_OOM; }
-
-            uint8_t* tmpY = tmp.get();
-            uint8_t* tmpU = tmpY + i420YSize;
-            uint8_t* tmpV = tmpU + i420UVSize;
-
-            ret = scaleI420(srcY, srcStrideY, srcU, srcStrideU, srcV, srcStrideV,
-                            srcW, srcH,
-                            tmpY, dstStrY, tmpU, dstStrUV, tmpV, dstStrUV,
-                            dstW, dstH);
-
-            if (ret == 0) {
-                ret = libyuv::I420ToNV16(tmpY, dstStrY, tmpU, dstStrUV, tmpV, dstStrUV,
-                                         dst, dstStrY, dst + ySize, dstStrUV_NV, dstW, dstH);
-            }
-        }
-        break;
-    }
-
-    // ── RGBA_8888 ─────────────────────────────────────────────────────────────
     case FMT_RGBA_8888: {
         if (!needsScale) {
             ret = libyuv::I420ToABGR(srcY, srcStrideY, srcU, srcStrideU, srcV, srcStrideV,
                                      dst, dstW * 4, dstW, dstH);
         } else {
-            size_t i420YSize, i420UVSize;
-            getI420Sizes(dstW, dstH, i420YSize, i420UVSize);
-            size_t i420Total = i420YSize + 2 * i420UVSize;
-
-            ScopedMalloc tmp(static_cast<uint8_t*>(std::malloc(i420Total)));
+            ScopedMalloc tmp(static_cast<uint8_t*>(std::malloc(i420Size)));
             if (!tmp) { LOGE("malloc failed"); return ERR_OOM; }
 
             uint8_t* tmpY = tmp.get();
-            uint8_t* tmpU = tmpY + i420YSize;
-            uint8_t* tmpV = tmpU + i420UVSize;
+            uint8_t* tmpU = tmpY + ySize;
+            uint8_t* tmpV = tmpU + uvSize;
 
             ret = scaleI420(srcY, srcStrideY, srcU, srcStrideU, srcV, srcStrideV,
                             srcW, srcH,
@@ -286,22 +237,17 @@ Java_com_itsme_amkush_libyuv_LibYuv_convertInto(
         break;
     }
 
-    // ── RGB_565 ───────────────────────────────────────────────────────────────
     case FMT_RGB_565: {
         if (!needsScale) {
             ret = libyuv::I420ToRGB565(srcY, srcStrideY, srcU, srcStrideU, srcV, srcStrideV,
                                        dst, dstW * 2, dstW, dstH);
         } else {
-            size_t i420YSize, i420UVSize;
-            getI420Sizes(dstW, dstH, i420YSize, i420UVSize);
-            size_t i420Total = i420YSize + 2 * i420UVSize;
-
-            ScopedMalloc tmp(static_cast<uint8_t*>(std::malloc(i420Total)));
+            ScopedMalloc tmp(static_cast<uint8_t*>(std::malloc(i420Size)));
             if (!tmp) { LOGE("malloc failed"); return ERR_OOM; }
 
             uint8_t* tmpY = tmp.get();
-            uint8_t* tmpU = tmpY + i420YSize;
-            uint8_t* tmpV = tmpU + i420UVSize;
+            uint8_t* tmpU = tmpY + ySize;
+            uint8_t* tmpV = tmpU + uvSize;
 
             ret = scaleI420(srcY, srcStrideY, srcU, srcStrideU, srcV, srcStrideV,
                             srcW, srcH,
