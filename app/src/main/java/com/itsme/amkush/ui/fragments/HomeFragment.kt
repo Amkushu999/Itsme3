@@ -41,7 +41,11 @@ fun HomeTabContent(
     val hasStream = savedUrl.isNotEmpty()
 
     // Try to resolve AppInfo for icon
-    val targetApp = if (hasTarget) AppInfo(effPkg ?: "", effName ?: "") else null
+    val targetIcon = remember(effPkg) {
+          if (effPkg.isNullOrEmpty()) null
+          else try { context.packageManager.getApplicationIcon(effPkg) } catch (e: Exception) { null }
+      }
+      val targetApp = if (hasTarget) AppInfo(effPkg ?: "", effName ?: "", targetIcon) else null
 
     val pulse = rememberInfiniteTransition(label = "pulse")
     val pulseAlpha by pulse.animateFloat(
