@@ -38,14 +38,26 @@ if(NOT EXISTS "${LIBYUV_SRC_DIR}/include/libyuv.h")
         "${LIBYUV_SRC_DIR}")
 endif()
 
-file(GLOB LIBYUV_SOURCES "${LIBYUV_SRC_DIR}/source/*.cc")
-add_library(yuv STATIC ${LIBYUV_SOURCES})
+# Collect libyuv sources
+file(GLOB LIBYUV_SRCS "${LIBYUV_SRC_DIR}/source/*.cc")
+
+# EXCLUDE SVE/SME — these are for server ARM, not Android phones
+list(FILTER LIBYUV_SRCS EXCLUDE REGEX ".*_sve\\.cc$")
+list(FILTER LIBYUV_SRCS EXCLUDE REGEX ".*_sme\\.cc$")
+
+# Add the library
+add_library(yuv STATIC ${LIBYUV_SRCS})
 target_include_directories(yuv PUBLIC "${LIBYUV_SRC_DIR}/include")
 target_compile_options(yuv PRIVATE -O3 -fPIC)
 
-# FIX: Enable dotprod for arm64-v8a (required by libyuv's neon64 code)
+# Per-file flags: only these files use dotprod+i8mm instructions
+# The rest of the library stays at the baseline arm64 target for compatibility
 if(ANDROID_ABI STREQUAL "arm64-v8a")
-    target_compile_options(yuv PRIVATE -march=armv8.2-a+dotprod)
+    set_source_files_properties(
+        "${LIBYUV_SRC_DIR}/source/compare_neon64.cc"
+        "${LIBYUV_SRC_DIR}/source/row_neon64.cc"
+        PROPERTIES COMPILE_FLAGS "-march=armv8.2-a+dotprod+i8mm"
+    )
 endif()
 
 # ── System libraries ──────────────────────────────────────────────────────────
