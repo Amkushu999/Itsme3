@@ -74,6 +74,12 @@ object SharedPrefs {
         p?.edit { putLong(KEY_TRIAL_EXPIRY, expiry) }
     }
 
+    fun isActivated(): Boolean {
+        val paid = isPaid()
+        val trial = isTrial() && System.currentTimeMillis() < getTrialExpiry()
+        return paid || trial
+    }
+
     fun clearActivation() {
         p?.edit {
             remove(KEY_ACTIVATION_TOKEN)
@@ -168,7 +174,7 @@ object SharedPrefs {
 
     fun getSpoofAndroid(): String? = p?.getString(KEY_SPOOF_ANDROID, null)
 
-    fun setSpoofAndroid(androidVersion: String?) {
+    fun setSpoofAndroid(androidVersion: String>) {
         p?.edit { putString(KEY_SPOOF_ANDROID, androidVersion) }
     }
 
