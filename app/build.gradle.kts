@@ -27,7 +27,8 @@ android {
         versionName   = "2.0"
 
         ndk {
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+            // Only ARM architectures (x86_64 removed - only needed for emulators)
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
         }
 
         externalNativeBuild {
@@ -40,7 +41,6 @@ android {
                     println("WARNING: ffmpeg.dir not set in local.properties.")
                     println("         Set ffmpeg.dir to your FFmpeg Android prebuilt root.")
                 }
-                // REMOVED: libyuv.dir logic — libyuv is now compiled from source in CMakeLists.txt
                 if (args.isNotEmpty()) arguments(*args.toTypedArray())
             }
         }
@@ -119,8 +119,8 @@ dependencies {
     implementation("com.squareup.retrofit2:retrofit:2.11.0")
     implementation("com.squareup.retrofit2:converter-gson:2.11.0")
 
-    // FFmpegKit — FIXED: Use JitPack mirror since Arthenica removed from Maven Central
-    implementation("com.github.arthenica:ffmpeg-kit-min:6.0-2")
+    // FFmpegKit — LOCAL .aar file (no internet dependency)
+    implementation(files("libs/ffmpeg-kit-6.1.1.aar"))
 
     implementation("androidx.camera:camera-core:1.4.2")
     implementation("androidx.camera:camera-camera2:1.4.2")
