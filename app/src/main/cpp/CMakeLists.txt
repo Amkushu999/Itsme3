@@ -41,13 +41,23 @@ endif()
 # Collect libyuv sources
 file(GLOB LIBYUV_SRCS "${LIBYUV_SRC_DIR}/source/*.cc")
 
-# EXCLUDE SVE/SME — these are for server ARM, not Android phones
+# EXCLUDE SVE/SME source files — these are for server ARM, not Android phones
 list(FILTER LIBYUV_SRCS EXCLUDE REGEX ".*_sve\\.cc$")
+list(FILTER LIBYUV_SRCS EXCLUDE REGEX ".*_sve2\\.cc$")
 list(FILTER LIBYUV_SRCS EXCLUDE REGEX ".*_sme\\.cc$")
 
 # Add the library
 add_library(yuv STATIC ${LIBYUV_SRCS})
 target_include_directories(yuv PUBLIC "${LIBYUV_SRC_DIR}/include")
+
+# CRITICAL FIX: Tell libyuv's dispatcher code to NOT call SVE/SVE2 functions
+# Without these defines, row_any.cc will try to link SVE2 functions that we excluded
+target_compile_definitions(yuv PRIVATE
+    LIBYUV_DISABLE_SVE
+    LIBYUV_DISABLE_SVE2
+    LIBYUV_DISABLE_SME
+)
+
 target_compile_options(yuv PRIVATE -O3 -fPIC)
 
 # Per-file flags: only these files use dotprod+i8mm instructions
