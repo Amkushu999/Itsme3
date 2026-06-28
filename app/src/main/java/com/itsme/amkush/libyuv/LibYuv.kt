@@ -1,6 +1,7 @@
 package com.itsme.amkush.libyuv
 
 import android.graphics.ImageFormat
+import android.graphics.PixelFormat
 import java.nio.ByteBuffer
 
 /**
@@ -62,7 +63,8 @@ object LibYuv {
         require(width > 0 && height > 0) { "Dimensions must be positive" }
         val ySize = width * height
         return when (format) {
-            ImageFormat.RGBA_8888  -> ySize * 4
+            // FIX: Use PixelFormat.RGBA_8888 instead of ImageFormat.RGBA_8888
+            PixelFormat.RGBA_8888  -> ySize * 4
             ImageFormat.RGB_565    -> ySize * 2
             ImageFormat.NV16       -> {
                 // YUV 4:2:2 — chroma subsampled horizontally only
