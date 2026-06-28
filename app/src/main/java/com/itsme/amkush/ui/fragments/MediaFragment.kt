@@ -71,6 +71,10 @@ fun MediaContent(
                 fileName = getFileName(context, uri)
                 val mime = context.contentResolver.getType(uri)
                 isVideo = mime?.startsWith("video/") == true
+            } catch (e: SecurityException) {
+                // Permission lost after reinstall/rebuild — clear stale URI so it doesn't fail every launch
+                SharedPrefs.setLastUsedUrl(null)
+                Logger.e("Media URI permission lost, clearing saved URI", e)
             } catch (e: Exception) { Logger.e("Error loading saved media", e) }
         }
     }
@@ -93,13 +97,11 @@ fun MediaContent(
     ) { result ->
         if (result.resultCode == android.app.Activity.RESULT_OK) {
             result.data?.data?.let { uri ->
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    try {
-                        context.contentResolver.takePersistableUriPermission(
-                            uri, Intent.FLAG_GRANT_READ_URI_PERMISSION
-                        )
-                    } catch (e: Exception) { Logger.e("Permission", e) }
-                }
+                try {
+                    context.contentResolver.takePersistableUriPermission(
+                        uri, Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    )
+                } catch (e: Exception) { Logger.e("Permission", e) }
                 mediaUri = uri
                 fileName = getFileName(context, uri)
                 val mime = context.contentResolver.getType(uri)
