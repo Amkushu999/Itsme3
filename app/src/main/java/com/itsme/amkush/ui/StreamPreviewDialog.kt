@@ -57,13 +57,13 @@ fun StreamPreviewDialog(url: String, onDismiss: () -> Unit) {
     val holderRef = remember { mutableStateOf<SurfaceHolder?>(null) }
 
     DisposableEffect(url) {
-        // Clean up any stale pipes left over from a previous crash or abrupt dismiss
-        val pipesDir = java.io.File(context.cacheDir, "pipes")
-        if (pipesDir.exists()) {
-            pipesDir.listFiles { f -> f.name.startsWith("fk_pipe_") }?.forEach { it.delete() }
+        // Clean up any existing pipes to prevent "already exists" errors
+        val pipeDir = File(context.cacheDir, "pipes")
+        if (pipeDir.exists()) {
+            pipeDir.listFiles()?.forEach { it.delete() }
         }
 
-        // Create a named pipe that FFmpeg Kit writes to
+        // Now register the new pipe
         val pipePath = FFmpegKitConfig.registerNewFFmpegPipe(context)
 
         var session: FFmpegSession? = null
@@ -156,6 +156,7 @@ fun StreamPreviewDialog(url: String, onDismiss: () -> Unit) {
             stopped = true
             session?.cancel()
             readThread.interrupt()
+            // Ensure the pipe is closed and deleted
             FFmpegKitConfig.closeFFmpegPipe(pipePath)
         }
     }
