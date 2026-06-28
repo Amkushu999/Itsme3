@@ -29,12 +29,7 @@ class SplashScreenActivity : ComponentActivity() {
         setContent {
             SplashContent(
                 onFinished = {
-                    // FIX: Changed TabsActivity → TabsScreen
-                    // FIX: Changed PaymentActivity → PaymentScreen
-                    val next = if (SharedPrefs.isActivated())
-                        Intent(this, TabsScreen::class.java)
-                    else
-                        Intent(this, PaymentScreen::class.java)
+                    val next = Intent(this, HomeScreen::class.java)
                     startActivity(next)
                     // API 34+ uses overrideActivityTransition; older uses deprecated method
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
