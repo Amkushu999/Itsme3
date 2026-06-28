@@ -44,17 +44,6 @@ private const val PREVIEW_H = 360
 
 /**
  * Full-screen stream preview dialog powered by FFmpeg Kit.
- *
- * Pipeline:
- *   FFmpegKit → rawvideo/rgba pipe → FileInputStream reader thread
- *   → Bitmap.copyPixelsFromBuffer → SurfaceHolder.lockCanvas/post
- *
- * FFmpeg Kit handles RTSP, HLS, RTMP, SRT, UDP, HTTP(S) and virtually
- * every other protocol — far wider support than Android's MediaPlayer.
- *
- * Note: FFmpeg Kit runs here in the MODULE's own process where its native
- * libraries are available. It is intentionally NOT used inside FfmpegStreamer
- * which runs inside the hooked target-app process via Xposed.
  */
 @Composable
 fun StreamPreviewDialog(url: String, onDismiss: () -> Unit) {
@@ -72,7 +61,8 @@ fun StreamPreviewDialog(url: String, onDismiss: () -> Unit) {
         val pipePath = FFmpegKitConfig.registerNewFFmpegPipe(context)
 
         var session: FFmpegSession? = null
-        @Volatile var stopped = false
+        // FIX: Removed @Volatile - not applicable to local variables
+        var stopped = false
 
         // ── Reader thread: pull RGBA frames from the pipe → render to SurfaceView ──
         val readThread = Thread({
@@ -133,24 +123,6 @@ fun StreamPreviewDialog(url: String, onDismiss: () -> Unit) {
         }
 
         // ── FFmpeg Kit session: decode stream → RGBA rawvideo → pipe ──
-        //
-        // Protocol-specific input flags are chosen from the URL scheme so that
-        // non-RTSP protocols don't receive RTSP-only options (which FFmpeg would
-        // reject or silently mishandle in some builds).
-        //
-        // Common flags:
-        //   -fflags +nobuffer    — minimal buffering for live streams
-        //   -flags low_delay     — reduce latency
-        //   -f rawvideo          — raw uncompressed output (no container overhead)
-        //   -pix_fmt rgba        — Android ARGB_8888 compatible byte layout
-        //   -vf scale=WxH        — scale to preview resolution
-        //   -r 30                — cap output rate so slow devices don't drop frames
-        //
-        // Protocol-specific flags:
-        //   RTSP  → -rtsp_transport tcp      (avoid UDP packet loss)
-        //   SRT   → -protocol_whitelist      (SRT needs explicit whitelist)
-        //   UDP/RTP → -protocol_whitelist    (raw UDP/RTP needs whitelist)
-        //   HLS/HTTP/RTMP/others → no special input flags needed
         val scheme = url.substringBefore("://").lowercase().trimStart('-')
         val inputFlags = when (scheme) {
             "rtsp"       -> "-rtsp_transport tcp "
