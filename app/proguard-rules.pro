@@ -60,3 +60,7 @@
     public static *** d(...);
     public static *** v(...);
 }
+  # Keep FFmpegKit and smart-exception (used internally by ffmpeg-kit-*.aar; R8 strips them without this)
+  -keep class com.arthenica.smartexception.** { *; }
+  -keep class com.arthenica.ffmpegkit.** { *; }
+  
