@@ -119,8 +119,10 @@ dependencies {
     implementation("com.squareup.retrofit2:retrofit:2.11.0")
     implementation("com.squareup.retrofit2:converter-gson:2.11.0")
 
-    // FFmpegKit — LOCAL .aar file (no internet dependency)
+    // ── FFmpegKit (Local .aar + required transitive dependencies) ─────────────
     implementation(files("libs/ffmpeg-kit-6.1.1.aar"))
+    implementation("com.arthenica:smart-exception-java:0.2.1")
+    implementation("com.arthenica:smart-exception-common:0.2.1")
 
     implementation("androidx.camera:camera-core:1.4.2")
     implementation("androidx.camera:camera-camera2:1.4.2")
