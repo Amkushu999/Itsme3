@@ -174,7 +174,7 @@ object SharedPrefs {
 
     fun getSpoofAndroid(): String? = p?.getString(KEY_SPOOF_ANDROID, null)
 
-    fun setSpoofAndroid(androidVersion: String>) {
+    fun setSpoofAndroid(androidVersion: String?) {
         p?.edit { putString(KEY_SPOOF_ANDROID, androidVersion) }
     }
 
