@@ -24,12 +24,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import com.arthenica.ffmpegkit.FFmpegKit
-import com.arthenica.ffmpegkit.FFmpegKitConfig
-import com.arthenica.ffmpegkit.FFmpegSession
-import com.arthenica.ffmpegkit.ReturnCode
-import java.io.File
-import java.io.FileInputStream
+import com.itsme.amkush.ffmpeg.FFmpegDecoder
 import java.nio.ByteBuffer
 
 private val Violet  = Color(0xFF6C63FF)
@@ -38,13 +33,9 @@ private val Surface = Color(0x12FFFFFF)
 private val Border  = Color(0x1AFFFFFF)
 private val TextMid = Color(0x88FFFFFF)
 
-// Output resolution for the preview (balance quality vs. memory)
 private const val PREVIEW_W = 640
 private const val PREVIEW_H = 360
 
-/**
- * Full-screen stream preview dialog powered by FFmpeg Kit.
- */
 @Composable
 fun StreamPreviewDialog(url: String, onDismiss: () -> Unit) {
     val context = LocalContext.current
@@ -53,111 +44,99 @@ fun StreamPreviewDialog(url: String, onDismiss: () -> Unit) {
     var error     by remember { mutableStateOf<String?>(null) }
     var liveTag   by remember { mutableStateOf(false) }
 
-    // Mutable ref so the reader thread can always get the latest holder
     val holderRef = remember { mutableStateOf<SurfaceHolder?>(null) }
+    val decoderHandle = remember { mutableStateOf(0L) }
 
     DisposableEffect(url) {
-        // Clean up any existing pipes to prevent "already exists" errors
-        val pipeDir = File(context.cacheDir, "pipes")
-        if (pipeDir.exists()) {
-            pipeDir.listFiles()?.forEach { it.delete() }
-        }
-
-        // Now register the new pipe
-        val pipePath = FFmpegKitConfig.registerNewFFmpegPipe(context)
-
-        var session: FFmpegSession? = null
-        // FIX: Removed @Volatile - not applicable to local variables
-        var stopped = false
-
-        // ── Reader thread: pull RGBA frames from the pipe → render to SurfaceView ──
-        val readThread = Thread({
-            try {
-                val frameBytes = PREVIEW_W * PREVIEW_H * 4   // RGBA = 4 bytes/pixel
-                val rawBuf     = ByteArray(frameBytes)
-                val pixelBuf   = ByteBuffer.allocate(frameBytes)
-
-                FileInputStream(File(pipePath)).use { fis ->
-                    while (!stopped && !Thread.currentThread().isInterrupted) {
-                        // Read exactly one complete RGBA frame from the pipe
-                        var read = 0
-                        while (read < frameBytes && !stopped) {
-                            val n = fis.read(rawBuf, read, frameBytes - read)
-                            if (n < 0) { stopped = true; break }
-                            read += n
-                        }
-                        if (read < frameBytes || stopped) break
-
-                        // Wrap raw bytes → Bitmap (ARGB_8888 matches FFmpeg rgba layout on Android)
-                        pixelBuf.clear()
-                        pixelBuf.put(rawBuf)
-                        pixelBuf.rewind()
-
-                        val bmp = Bitmap.createBitmap(PREVIEW_W, PREVIEW_H, Bitmap.Config.ARGB_8888)
-                        bmp.copyPixelsFromBuffer(pixelBuf)
-
-                        // Draw to the SurfaceView
-                        val holder = holderRef.value
-                        if (holder != null && holder.surface.isValid) {
-                            val canvas = holder.lockCanvas()
-                            if (canvas != null) {
-                                try {
-                                    val dst = android.graphics.Rect(0, 0, canvas.width, canvas.height)
-                                    canvas.drawBitmap(bmp, null, dst, null)
-                                } finally {
-                                    holder.unlockCanvasAndPost(canvas)
-                                }
-                            }
-                        }
-                        bmp.recycle()
-
-                        // Mark as live on first successful frame
-                        if (!liveTag) {
-                            buffering = false
-                            liveTag   = true
+        val frameCallback = object : FFmpegDecoder.FrameCallback {
+            override fun onFrameAvailable(
+                yBuf: ByteBuffer, uBuf: ByteBuffer, vBuf: ByteBuffer,
+                width: Int, height: Int, ptsUs: Long
+            ) {
+                // Convert I420 to RGBA for display
+                val rgbaBuf = ByteBuffer.allocate(width * height * 4)
+                
+                // Simple I420 to RGBA conversion
+                val ySize = width * height
+                val uvSize = (width / 2) * (height / 2)
+                
+                for (row in 0 until height) {
+                    for (col in 0 until width) {
+                        val yIndex = row * width + col
+                        val uvRow = row / 2
+                        val uvCol = col / 2
+                        val uvIndex = ySize + uvRow * (width / 2) + uvCol
+                        
+                        val y = yBuf.get(yIndex).toInt() and 0xFF
+                        val u = uBuf.get(uvIndex - ySize).toInt() and 0xFF
+                        val v = vBuf.get(uvIndex - ySize + uvSize).toInt() and 0xFF
+                        
+                        // YUV to RGB conversion
+                        val c = y - 16
+                        val d = u - 128
+                        val e = v - 128
+                        
+                        var r = (298 * c + 409 * e + 128) shr 8
+                        var g = (298 * c - 100 * d - 208 * e + 128) shr 8
+                        var b = (298 * c + 516 * d + 128) shr 8
+                        
+                        r = r.coerceIn(0, 255)
+                        g = g.coerceIn(0, 255)
+                        b = b.coerceIn(0, 255)
+                        
+                        val rgbaIndex = (row * width + col) * 4
+                        rgbaBuf.put(rgbaIndex, r.toByte())
+                        rgbaBuf.put(rgbaIndex + 1, g.toByte())
+                        rgbaBuf.put(rgbaIndex + 2, b.toByte())
+                        rgbaBuf.put(rgbaIndex + 3, 255.toByte())
+                    }
+                }
+                
+                rgbaBuf.rewind()
+                
+                val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                bmp.copyPixelsFromBuffer(rgbaBuf)
+                
+                val holder = holderRef.value
+                if (holder != null && holder.surface.isValid) {
+                    val canvas = holder.lockCanvas()
+                    if (canvas != null) {
+                        try {
+                            val dst = android.graphics.Rect(0, 0, canvas.width, canvas.height)
+                            canvas.drawBitmap(bmp, null, dst, null)
+                        } finally {
+                            holder.unlockCanvasAndPost(canvas)
                         }
                     }
                 }
-            } catch (e: InterruptedException) {
-                Thread.currentThread().interrupt()
-            } catch (e: Throwable) {
-                if (!stopped) error = "Stream error: ${e.message}"
-            }
-        }, "FfmpegPreviewReader").also {
-            it.isDaemon = true
-            it.start()
-        }
-
-        // ── FFmpeg Kit session: decode stream → RGBA rawvideo → pipe ──
-        val scheme = url.substringBefore("://").lowercase().trimStart('-')
-        val inputFlags = when (scheme) {
-            "rtsp"       -> "-rtsp_transport tcp "
-            "srt"        -> "-protocol_whitelist file,crypto,data,srt,udp "
-            "udp", "rtp" -> "-protocol_whitelist file,crypto,data,udp,rtp "
-            else         -> ""   // hls, http, https, rtmp, mms, ftp — no special flags
-        }
-        val cmd = "${inputFlags}-fflags +nobuffer -flags low_delay " +
-                  "-i \"$url\" " +
-                  "-vf scale=$PREVIEW_W:$PREVIEW_H " +
-                  "-f rawvideo -pix_fmt rgba -r 30 " +
-                  "\"$pipePath\""
-
-        session = FFmpegKit.executeAsync(cmd, { s ->
-            if (!stopped) {
-                when {
-                    ReturnCode.isSuccess(s.returnCode) -> { /* stream ended cleanly */ }
-                    ReturnCode.isCancel(s.returnCode)  -> { /* user dismissed */        }
-                    else -> error = "FFmpeg ended (code ${s.returnCode})"
+                bmp.recycle()
+                
+                if (!liveTag) {
+                    buffering = false
+                    liveTag = true
                 }
             }
-        }, null, null)
-
+            
+            override fun onError(code: Int, msg: String) {
+                error = "Decoder error $code: $msg"
+            }
+            
+            override fun onEof() {
+                // File ended
+            }
+        }
+        
+        // Start decoder
+        decoderHandle.value = FFmpegDecoder.open(url, frameCallback)
+        if (decoderHandle.value == 0L) {
+            error = "Failed to open stream"
+        }
+        
         onDispose {
-            stopped = true
-            session?.cancel()
-            readThread.interrupt()
-            // Ensure the pipe is closed and deleted
-            FFmpegKitConfig.closeFFmpegPipe(pipePath)
+            if (decoderHandle.value != 0L) {
+                FFmpegDecoder.close(decoderHandle.value)
+                decoderHandle.value = 0L
+            }
         }
     }
 
@@ -173,7 +152,7 @@ fun StreamPreviewDialog(url: String, onDismiss: () -> Unit) {
                 .border(1.dp, Border, RoundedCornerShape(20.dp))
         ) {
             Column {
-                // ── Title bar ──
+                // Title bar
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -200,7 +179,7 @@ fun StreamPreviewDialog(url: String, onDismiss: () -> Unit) {
                     }
                 }
 
-                // ── Video surface ──
+                // Video surface
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -221,7 +200,6 @@ fun StreamPreviewDialog(url: String, onDismiss: () -> Unit) {
                         modifier = Modifier.fillMaxSize()
                     )
 
-                    // Buffering overlay
                     if (buffering && error == null) {
                         Column(
                             horizontalAlignment = Alignment.CenterHorizontally,
@@ -232,11 +210,10 @@ fun StreamPreviewDialog(url: String, onDismiss: () -> Unit) {
                                 modifier = Modifier.size(32.dp),
                                 strokeWidth = 2.dp
                             )
-                            Text("Connecting via FFmpeg Kit…", color = TextMid, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                            Text("Connecting via FFmpeg…", color = TextMid, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
                         }
                     }
 
-                    // Error overlay
                     if (error != null) {
                         Column(
                             horizontalAlignment = Alignment.CenterHorizontally,
@@ -257,7 +234,7 @@ fun StreamPreviewDialog(url: String, onDismiss: () -> Unit) {
                     }
                 }
 
-                // ── Bottom controls ──
+                // Bottom controls
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
