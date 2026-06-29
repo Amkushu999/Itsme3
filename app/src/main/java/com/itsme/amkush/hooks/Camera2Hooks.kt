@@ -6,6 +6,7 @@ import android.os.Handler
 import android.os.Looper
 import android.view.Surface
 import com.itsme.amkush.AppState
+import android.util.Log
 import com.itsme.amkush.utils.Logger
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedHelpers
@@ -251,6 +252,8 @@ object Camera2Hooks {
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
                         if (!AppState.isHookingActive) return
+                        val _camId = param.args.getOrNull(0) as? String ?: "?"
+                        Log.d("FACEGATE", "Camera2: openCamera(id=" + _camId + ") INTERCEPTED")
                         blockOpenCamera(
                             param,
                             cameraId    = param.args[0] as? String ?: "0",
@@ -348,6 +351,7 @@ object Camera2Hooks {
                 Handler::class.java,
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
+                        Log.d("FACEGATE", "Camera2: createCaptureSession() INTERCEPTED")
                         val dev = param.thisObject
                         if (dev !in FakeCameraObjects.fakeCamera2Devices) return
                         param.result = null
