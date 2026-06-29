@@ -1,6 +1,7 @@
 package com.itsme.amkush.hooks
 
 import com.itsme.amkush.AppState
+import android.util.Log
 import com.itsme.amkush.utils.Logger
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedHelpers
@@ -58,6 +59,7 @@ object CameraXHooks {
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
                         if (!AppState.isHookingActive) return
+                        Log.d("FACEGATE", "CameraX: ImageAnalysis.setAnalyzer() INTERCEPTED")
                         val originalAnalyzer = param.args[1] ?: return
                         val analyzeMethod = try {
                             originalAnalyzer.javaClass.getMethod("analyze", imageProxyClass)
@@ -105,6 +107,7 @@ object CameraXHooks {
                 android.util.Size::class.java,
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
+                        Log.d("FACEGATE", "CameraX: ImageAnalysis.Builder resolution intercepted")
                         val sz = param.args[0] as? android.util.Size ?: return
                         Logger.d("$TAG CameraX target resolution: ${sz.width}x${sz.height}")
                     }
@@ -138,6 +141,7 @@ object CameraXHooks {
                 Array<Any>::class.java,
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
+                        Log.d("FACEGATE", "CameraX: ProcessCameraProvider.bindToLifecycle() INTERCEPTED")
                         // Camera2Hooks handles the actual blocking.
                         // Log here for debugging convenience.
                         if (!AppState.isHookingActive) return
