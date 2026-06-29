@@ -10,6 +10,8 @@
 #define LOG_TAG "LibYuvWrapper"
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
+#define FG_TAG  "FACEGATE"
+#define LOGFG(...) __android_log_print(ANDROID_LOG_DEBUG, FG_TAG, __VA_ARGS__)
 
 // ── Android ImageFormat Constants ─────────────────────────────────────────────
 static const int FMT_RGBA_8888   = 0x01;
@@ -69,6 +71,8 @@ Java_com_itsme_amkush_libyuv_LibYuv_convertInto(
     auto* srcU = static_cast<uint8_t*>(env->GetDirectBufferAddress(srcUBuf));
     auto* srcV = static_cast<uint8_t*>(env->GetDirectBufferAddress(srcVBuf));
     auto* dst  = static_cast<uint8_t*>(env->GetDirectBufferAddress(dstBuf));
+
+    LOGFG("LibYuv convertInto: %dx%d -> %dx%d fmt=0x%x", srcW, srcH, dstW, dstH, dstFmt);
 
     if (!srcY || !srcU || !srcV || !dst) {
         LOGE("convertInto: null DirectByteBuffer address");
