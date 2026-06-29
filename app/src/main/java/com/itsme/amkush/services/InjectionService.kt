@@ -19,6 +19,7 @@ import android.util.Log
 import com.itsme.amkush.utils.Logger
 import java.io.File
 import java.nio.ByteBuffer
+import java.util.concurrent.Executors // FIX: Added for background threading
 
 /**
  * InjectionService — module-process owner of the FFmpeg pipeline.
@@ -36,6 +37,9 @@ import java.nio.ByteBuffer
  *   - Binder calls → Binder thread pool → forward to SurfaceRouter (thread-safe).
  *   - FFmpeg frames → native decode thread → SurfaceRouter.onFrameAvailable()
  *     → per-surface push threads (each with their own ImageWriter).
+ *   - FIX: All FFmpeg open/close/hotSwap operations run on [decoderExecutor]
+ *     to prevent ANR (Application Not Responding) errors caused by blocking
+ *     network I/O in avformat_open_input().
  */
 class InjectionService : Service() {
 
@@ -79,6 +83,12 @@ class InjectionService : Service() {
     // Native decoder handle; 0 = not running
     @Volatile private var decoderHandle: Long = 0L
 
+    // FIX: Dedicated background thread for all FFmpeg operations.
+    // FFmpeg network calls (avformat_open_input) block the calling thread.
+    // If we call them on the main thread or Binder thread, it causes an ANR.
+    // Using a single-thread executor ensures operations are serialized.
+    private val decoderExecutor = Executors.newSingleThreadExecutor()
+
     // ── ISurfaceInjector Binder stub ─────────────────────────────────────────
 
     private val binderImpl = object : ISurfaceInjector.Stub() {
@@ -103,34 +113,43 @@ class InjectionService : Service() {
 
         override fun startDecoder(url: String) {
             Logger.d(Logger.INJECTION, "$TAG startDecoder: url=$url")
-            if (url.isNotBlank()) startOrRestartDecoder(url)
+            if (url.isNotBlank()) {
+                // FIX: Run on background thread to prevent ANR
+                decoderExecutor.execute { startOrRestartDecoder(url) }
+            }
         }
 
         override fun hotSwap(url: String) {
             Logger.d(Logger.INJECTION, "$TAG hotSwap: url=$url")
             Log.d("FACEGATE", "InjectionService: hotSwap -> $url")
-            if (url.isBlank()) {
-                Logger.d(Logger.INJECTION, "$TAG hotSwap blank — stopping decoder")
-                stopDecoder()
-                return
-            }
-            // Resolve URL outside the lock (can involve disk I/O for content:// URIs)
-            val resolved = resolveUrl(url) ?: run {
-                Logger.e(Logger.INJECTION, "$TAG hotSwap: URL resolution failed for $url")
-                return
-            }
-            // BUG FIX: Read decoderHandle and call hotSwap inside the same lock used by
-            // startOrRestartDecoder/stopDecoder. Without this, stopDecoder() can set
-            // decoderHandle=0 and free the native handle between our read and our call,
-            // resulting in FFmpegDecoder.hotSwap() being invoked on a closed/freed handle.
-            synchronized(this@InjectionService) {
-                val h = decoderHandle
-                if (h != 0L) {
-                    Logger.d(Logger.INJECTION, "$TAG hotSwap: signalling native handle=$h  new=$resolved")
-                    FFmpegDecoder.hotSwap(h, resolved)
-                } else {
-                    Logger.d(Logger.INJECTION, "$TAG hotSwap: no running decoder — starting fresh")
-                    startOrRestartDecoder(url)
+            
+            // FIX: Run on background thread to prevent ANR
+            decoderExecutor.execute {
+                if (url.isBlank()) {
+                    Logger.d(Logger.INJECTION, "$TAG hotSwap blank — stopping decoder")
+                    stopDecoder()
+                    return@execute
+                }
+                
+                // Resolve URL outside the lock (can involve disk I/O for content:// URIs)
+                val resolved = resolveUrl(url) ?: run {
+                    Logger.e(Logger.INJECTION, "$TAG hotSwap: URL resolution failed for $url")
+                    return@execute
+                }
+                
+                // BUG FIX: Read decoderHandle and call hotSwap inside the same lock used by
+                // startOrRestartDecoder/stopDecoder. Without this, stopDecoder() can set
+                // decoderHandle=0 and free the native handle between our read and our call,
+                // resulting in FFmpegDecoder.hotSwap() being invoked on a closed/freed handle.
+                synchronized(this@InjectionService) {
+                    val h = decoderHandle
+                    if (h != 0L) {
+                        Logger.d(Logger.INJECTION, "$TAG hotSwap: signalling native handle=$h  new=$resolved")
+                        FFmpegDecoder.hotSwap(h, resolved)
+                    } else {
+                        Logger.d(Logger.INJECTION, "$TAG hotSwap: no running decoder — starting fresh")
+                        startOrRestartDecoder(url)
+                    }
                 }
             }
         }
@@ -138,7 +157,8 @@ class InjectionService : Service() {
         override fun stopAll() {
             Logger.d(Logger.INJECTION, "$TAG stopAll — tearing down all sessions and decoder")
             SurfaceRouter.unregisterAll()
-            stopDecoder()
+            // FIX: Run on background thread to prevent ANR
+            decoderExecutor.execute { stopDecoder() }
         }
     }
 
@@ -166,8 +186,12 @@ class InjectionService : Service() {
             RemoteConfig.setMediaUri(this, mediaUri)
             RemoteConfig.setInjectionActive(this, true)
             sendConfigBroadcast(streamUrl = streamUrl, mediaUri = mediaUri, active = true)
+            
             val url = streamUrl ?: mediaUri
-            if (!url.isNullOrEmpty()) startOrRestartDecoder(url)
+            if (!url.isNullOrEmpty()) {
+                // FIX: Run on background thread to prevent ANR
+                decoderExecutor.execute { startOrRestartDecoder(url) }
+            }
         }
         return START_STICKY
     }
@@ -177,7 +201,13 @@ class InjectionService : Service() {
     override fun onDestroy() {
         Logger.i(Logger.INJECTION, "$TAG onDestroy — tearing down decoder and all sessions")
         SurfaceRouter.unregisterAll()
-        stopDecoder()
+        
+        // FIX: Run on background thread to prevent ANR, then shutdown executor
+        decoderExecutor.execute { 
+            stopDecoder() 
+            decoderExecutor.shutdown() 
+        }
+        
         RemoteConfig.clearAll(this)
         sendConfigBroadcast(streamUrl = null, mediaUri = null, active = false)
         isRunning = false
@@ -207,7 +237,8 @@ class InjectionService : Service() {
         if (decoderHandle != 0L) return
         val url = RemoteConfig.getStreamUrl(this) ?: RemoteConfig.getMediaUri(this)
         if (!url.isNullOrEmpty()) {
-            startOrRestartDecoder(url)
+            // FIX: Run on background thread to prevent ANR
+            decoderExecutor.execute { startOrRestartDecoder(url) }
         } else {
             Logger.d("$TAG no URL configured yet — decoder deferred until URL is set")
         }
@@ -220,19 +251,24 @@ class InjectionService : Service() {
         stopDecoder()
         Logger.d(Logger.INJECTION, "$TAG startOrRestartDecoder raw=$rawUrl")
         Log.d("FACEGATE", "InjectionService: startOrRestartDecoder raw=$rawUrl")
+        
         val url = resolveUrl(rawUrl) ?: run {
             Logger.e(Logger.INJECTION, "$TAG URL resolution failed, aborting: $rawUrl")
             Log.e("FACEGATE", "InjectionService: URL resolution failed: $rawUrl")
             return
         }
+        
         if (url != rawUrl) {
             Logger.d(Logger.INJECTION, "$TAG URL normalized: $rawUrl → $url")
             Log.d("FACEGATE", "InjectionService: URL normalized: $rawUrl → $url")
         }
+        
         if (url.startsWith("rtmp://") || url.startsWith("rtmps://"))
             Logger.i(Logger.INJECTION, "$TAG RTMP stream — ensure port 1935 is reachable")
+        
         Logger.d(Logger.INJECTION, "$TAG FFmpegDecoder.open url=$url")
         val handle = FFmpegDecoder.open(url, frameCallback)
+        
         if (handle == 0L) {
             Logger.e(Logger.INJECTION, "$TAG FFmpegDecoder.open FAILED for: $url")
             Log.e("FACEGATE", "InjectionService: FFmpegDecoder.open FAILED url=$url")
@@ -273,6 +309,7 @@ class InjectionService : Service() {
         }
         Logger.d(Logger.INJECTION, "$TAG resolveUrl: content:// URI — copying to temp file")
         Log.d("FACEGATE", "InjectionService: resolving content:// URI -> temp file")
+        
         // BUG FIX (original): Create temp file reference before try-block so we can delete it on failure.
         val tmp = File(cacheDir, "fg_media_${System.currentTimeMillis()}.tmp")
         return try {
@@ -317,8 +354,11 @@ class InjectionService : Service() {
         if (h != 0L) {
             Logger.d(Logger.INJECTION, "$TAG stopDecoder: closing handle=$h")
             decoderHandle = 0L
-            try { FFmpegDecoder.close(h) }
-            catch (e: Throwable) { Logger.e(Logger.INJECTION, "$TAG stopDecoder error: ${e.message}", e) }
+            try { 
+                FFmpegDecoder.close(h) 
+            } catch (e: Throwable) { 
+                Logger.e(Logger.INJECTION, "$TAG stopDecoder error: ${e.message}", e) 
+            }
         }
     }
 
