@@ -18,6 +18,10 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    
+    <!-- FIX: Required for Android 11+ to write logs to the Downloads folder -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" 
+        tools:ignore="ScopedStorage" />
 
     <queries>
         <intent>
@@ -33,7 +37,8 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.AppCompat.NoActionBar"
-        android:usesCleartextTraffic="false"
+        android:requestLegacyExternalStorage="true"
+        android:usesCleartextTraffic="true"
         android:networkSecurityConfig="@xml/network_security_config"
         tools:targetApi="35">
 
@@ -43,7 +48,7 @@
             android:value="true" />
         <meta-data
             android:name="xposeddescription"
-            android:value="FaceGate - GStreamer Virtual Camera" />
+            android:value="FaceGate - FFmpeg Virtual Camera" />
         <meta-data
             android:name="xposedminversion"
             android:value="89" />
@@ -87,12 +92,6 @@
             android:exported="true"
             android:foregroundServiceType="mediaPlayback|camera|dataSync"
             android:enabled="true">
-            <!--
-                Explicit action so Xposed hooks in hooked-app processes can bind via:
-                    Intent("com.itsme.amkush.action.SURFACE_INJECTOR").setPackage("com.itsme.amkush")
-                The setPackage() restriction means only code that already knows the
-                module package name can bind — no open exposure to arbitrary apps.
-            -->
             <intent-filter>
                 <action android:name="com.itsme.amkush.action.SURFACE_INJECTOR" />
             </intent-filter>
@@ -100,7 +99,6 @@
 
         <!-- ==================== IPC CONFIG PROVIDER ==================== -->
 
-        <!-- Exposes injection config cross-process so Xposed hooks can read it -->
         <provider
             android:name=".ipc.FaceGateIpcProvider"
             android:authorities="com.itsme.amkush.ipc"
