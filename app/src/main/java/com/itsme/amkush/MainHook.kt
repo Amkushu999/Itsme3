@@ -8,7 +8,8 @@ package com.itsme.amkush
   import de.robv.android.xposed.XposedHelpers
   import de.robv.android.xposed.callbacks.XC_LoadPackage
   import com.itsme.amkush.hooks.*
-  import com.itsme.amkush.utils.Logger
+  import android.util.Log
+import com.itsme.amkush.utils.Logger
 
   class MainHook : IXposedHookLoadPackage {
 
@@ -16,6 +17,7 @@ package com.itsme.amkush
           if (lpparam.packageName == "android" || lpparam.packageName == "system") return
 
           Logger.init(true)
+          Log.d("FACEGATE", "handleLoadPackage: " + lpparam.packageName)
           Logger.d("Loading package: ${lpparam.packageName}")
 
           // Only hook Application.onCreate here.  All camera / anti-detection hooks are
@@ -71,6 +73,7 @@ package com.itsme.amkush
                           }
 
                           Logger.d("Target app detected: ${lpparam.packageName} — FFmpeg camera block active")
+                          Log.d("FACEGATE", "TARGET MATCHED: " + lpparam.packageName + " — installing all hooks now")
                           AppState.isHookingActive = true
 
                           // Register live-update receiver — URL/config changes from the module
@@ -87,14 +90,14 @@ package com.itsme.amkush
                           // future calls since Camera APIs are always called after Application.onCreate.
                           //
                           // Camera hooks (FFmpeg native architecture):
-                          try { Camera1Hooks.hookAll(lpparam); Logger.d("Camera1 hooks installed") }
-                          catch (e: Throwable) { Logger.e("Camera1 hooks failed", e) }
+                          try { Camera1Hooks.hookAll(lpparam); Logger.d("Camera1 hooks installed"); Log.d("FACEGATE", "Camera1 hooks installed OK") }
+                          catch (e: Throwable) { Logger.e("Camera1 hooks failed", e); Log.e("FACEGATE", "Camera1 hooks FAILED: " + e.message) }
 
-                          try { Camera2Hooks.hookAll(lpparam); Logger.d("Camera2 hooks installed") }
-                          catch (e: Throwable) { Logger.e("Camera2 hooks failed", e) }
+                          try { Camera2Hooks.hookAll(lpparam); Logger.d("Camera2 hooks installed"); Log.d("FACEGATE", "Camera2 hooks installed OK") }
+                          catch (e: Throwable) { Logger.e("Camera2 hooks failed", e); Log.e("FACEGATE", "Camera2 hooks FAILED: " + e.message) }
 
-                          try { CameraXHooks.hookAll(lpparam); Logger.d("CameraX hooks installed") }
-                          catch (e: Throwable) { Logger.e("CameraX hooks failed", e) }
+                          try { CameraXHooks.hookAll(lpparam); Logger.d("CameraX hooks installed"); Log.d("FACEGATE", "CameraX hooks installed OK") }
+                          catch (e: Throwable) { Logger.e("CameraX hooks failed", e); Log.e("FACEGATE", "CameraX hooks FAILED: " + e.message) }
 
                           // EXIF spoofing:
                           try { ExifSpoofHooks.hookAll(lpparam); Logger.d("EXIF spoof hooks installed") }
