@@ -6,17 +6,13 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
-// ── Read local.properties ─────────────────────────────────────────────────────
 val localProps = Properties().also { props ->
     rootProject.file("local.properties").takeIf { it.exists() }
         ?.inputStream()?.use { props.load(it) }
 }
 
-val ffmpegDir: String? = localProps.getProperty("ffmpeg.dir")
-    ?: System.getenv("FFMPEG_ROOT")
-
-val opensslDir: String? = localProps.getProperty("openssl.dir")
-    ?: System.getenv("OPENSSL_ROOT")
+val ffmpegDir: String? = localProps.getProperty("ffmpeg.dir") ?: System.getenv("FFMPEG_ROOT")
+val opensslDir: String? = localProps.getProperty("openssl.dir") ?: System.getenv("OPENSSL_ROOT")
 
 android {
     namespace  = "com.itsme.amkush"
@@ -37,19 +33,8 @@ android {
             cmake {
                 cppFlags += listOf("-std=c++14", "-frtti", "-fexceptions")
                 val args = mutableListOf<String>()
-                
-                if (!ffmpegDir.isNullOrEmpty()) {
-                    args += "-DFFMPEG_ROOT=$ffmpegDir"
-                } else {
-                    println("WARNING: ffmpeg.dir not set in local.properties.")
-                }
-                
-                if (!opensslDir.isNullOrEmpty()) {
-                    args += "-DOPENSSL_ROOT=$opensslDir"
-                } else {
-                    println("WARNING: openssl.dir not set in local.properties.")
-                }
-                
+                if (!ffmpegDir.isNullOrEmpty()) args += "-DFFMPEG_ROOT=$ffmpegDir"
+                if (!opensslDir.isNullOrEmpty()) args += "-DOPENSSL_ROOT=$opensslDir"
                 if (args.isNotEmpty()) arguments(*args.toTypedArray())
             }
         }
@@ -66,14 +51,9 @@ android {
         release {
             isMinifyEnabled   = true
             isShrinkResources = true
-            proguardFiles(
-                getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro"
-            )
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
-        debug {
-            isMinifyEnabled = false
-        }
+        debug { isMinifyEnabled = false }
     }
 
     compileOptions {
@@ -102,7 +82,6 @@ dependencies {
 
     implementation("androidx.core:core-ktx:1.16.0")
     implementation("androidx.appcompat:appcompat:1.7.0")
-
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.9.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.9.1")
 
@@ -126,9 +105,7 @@ dependencies {
     implementation("com.squareup.retrofit2:retrofit:2.11.0")
     implementation("com.squareup.retrofit2:converter-gson:2.11.0")
 
-    implementation(files("libs/ffmpeg-kit-6.1.1.aar"))
-    implementation("com.arthenica:smart-exception-java:0.2.1")
-    implementation("com.arthenica:smart-exception-common:0.2.1")
+    // FFmpegKit is COMPLETELY REMOVED. We use our custom FFmpegDecoder + LibYuv instead.
 
     implementation("androidx.camera:camera-core:1.4.2")
     implementation("androidx.camera:camera-camera2:1.4.2")
