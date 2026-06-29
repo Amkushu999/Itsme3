@@ -6,7 +6,7 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
-// ── Read local.properties (for ffmpeg.dir only) ──────────────────────────────
+// ── Read local.properties ─────────────────────────────────────────────────────
 val localProps = Properties().also { props ->
     rootProject.file("local.properties").takeIf { it.exists() }
         ?.inputStream()?.use { props.load(it) }
@@ -14,6 +14,9 @@ val localProps = Properties().also { props ->
 
 val ffmpegDir: String? = localProps.getProperty("ffmpeg.dir")
     ?: System.getenv("FFMPEG_ROOT")
+
+val opensslDir: String? = localProps.getProperty("openssl.dir")
+    ?: System.getenv("OPENSSL_ROOT")
 
 android {
     namespace  = "com.itsme.amkush"
@@ -27,26 +30,31 @@ android {
         versionName   = "2.0"
 
         ndk {
-            // Only ARM architectures (x86_64 removed - only needed for emulators)
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
         }
 
         externalNativeBuild {
             cmake {
                 cppFlags += listOf("-std=c++14", "-frtti", "-fexceptions")
                 val args = mutableListOf<String>()
+                
                 if (!ffmpegDir.isNullOrEmpty()) {
                     args += "-DFFMPEG_ROOT=$ffmpegDir"
                 } else {
                     println("WARNING: ffmpeg.dir not set in local.properties.")
-                    println("         Set ffmpeg.dir to your FFmpeg Android prebuilt root.")
                 }
+                
+                if (!opensslDir.isNullOrEmpty()) {
+                    args += "-DOPENSSL_ROOT=$opensslDir"
+                } else {
+                    println("WARNING: openssl.dir not set in local.properties.")
+                }
+                
                 if (args.isNotEmpty()) arguments(*args.toTypedArray())
             }
         }
     }
 
-    // ── NDK / CMake build ─────────────────────────────────────────────────────
     externalNativeBuild {
         cmake {
             path    = file("src/main/cpp/CMakeLists.txt")
@@ -76,7 +84,7 @@ android {
     buildFeatures {
         compose     = true
         buildConfig = true
-        aidl        = true   // enable AIDL code generation for ISurfaceInjector
+        aidl        = true
     }
 }
 
@@ -98,7 +106,6 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.9.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.9.1")
 
-    // Compose BOM 2025.06.00 — compatible with Kotlin 2.3.0 / Compose Runtime 1.9.x
     val composeBom = platform("androidx.compose:compose-bom:2025.06.00")
     implementation(composeBom)
     implementation("androidx.compose.ui:ui")
@@ -119,7 +126,6 @@ dependencies {
     implementation("com.squareup.retrofit2:retrofit:2.11.0")
     implementation("com.squareup.retrofit2:converter-gson:2.11.0")
 
-    // ── FFmpegKit (Local .aar + required transitive dependencies) ─────────────
     implementation(files("libs/ffmpeg-kit-6.1.1.aar"))
     implementation("com.arthenica:smart-exception-java:0.2.1")
     implementation("com.arthenica:smart-exception-common:0.2.1")
