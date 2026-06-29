@@ -26,6 +26,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.itsme.amkush.ffmpeg.FFmpegDecoder
 import com.itsme.amkush.libyuv.LibYuv
+import kotlinx.coroutines.*
 import java.nio.ByteBuffer
 
 private val Violet  = Color(0xFF6C63FF)
@@ -41,18 +42,37 @@ fun StreamPreviewDialog(url: String, onDismiss: () -> Unit) {
 
     val holderRef = remember { mutableStateOf<SurfaceHolder?>(null) }
     val decoderHandle = remember { mutableStateOf(0L) }
+    
+    // Coroutine scope for background operations
+    val scope = rememberCoroutineScope()
 
     DisposableEffect(url) {
+        // FIX 1: Reusable memory. Local vars inside DisposableEffect are perfect for this.
+        // They are allocated exactly once when the dialog opens, and destroyed when it closes.
+        var reusableBitmap: Bitmap? = null
+        var reusableRgbaBuf: ByteBuffer? = null
+
         val frameCallback = object : FFmpegDecoder.FrameCallback {
             override fun onFrameAvailable(
                 yBuf: ByteBuffer, uBuf: ByteBuffer, vBuf: ByteBuffer,
                 width: Int, height: Int, ptsUs: Long
             ) {
-                // 1. Allocate Direct ByteBuffer for RGBA output
-                val rgbaSize = width * height * 4
-                val rgbaBuf = ByteBuffer.allocateDirect(rgbaSize)
+                // FIX 2: Reuse or resize bitmap/buffer instead of allocating new ones
+                val needsResize = reusableBitmap == null || 
+                                  reusableBitmap!!.width != width || 
+                                  reusableBitmap!!.height != height
 
-                // 2. Convert I420 to RGBA using your custom LibYuv JNI wrapper (Extremely fast)
+                if (needsResize) {
+                    reusableBitmap?.recycle()
+                    reusableBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                    reusableRgbaBuf = ByteBuffer.allocateDirect(width * height * 4)
+                }
+
+                val bmp = reusableBitmap!!
+                val rgbaBuf = reusableRgbaBuf!!
+
+                // FIX 3: Convert YUV to RGBA using your existing LibYuv wrapper
+                rgbaBuf.rewind() // Ensure buffer is at position 0 before writing
                 val ret = LibYuv.convertInto(
                     srcY = yBuf, srcU = uBuf, srcV = vBuf,
                     srcW = width, srcH = height,
@@ -63,16 +83,14 @@ fun StreamPreviewDialog(url: String, onDismiss: () -> Unit) {
                 )
 
                 if (ret != 0) {
-                    error = "LibYuv conversion failed: $ret"
+                    scope.launch(Dispatchers.Main) { error = "LibYuv conversion failed: $ret" }
                     return
                 }
 
-                // 3. Create Bitmap and copy pixels
+                // Copy to bitmap and draw
                 rgbaBuf.rewind()
-                val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
                 bmp.copyPixelsFromBuffer(rgbaBuf)
 
-                // 4. Draw to SurfaceView
                 val holder = holderRef.value
                 if (holder != null && holder.surface.isValid) {
                     val canvas = holder.lockCanvas()
@@ -85,16 +103,17 @@ fun StreamPreviewDialog(url: String, onDismiss: () -> Unit) {
                         }
                     }
                 }
-                bmp.recycle()
 
                 if (!liveTag) {
-                    buffering = false
-                    liveTag = true
+                    scope.launch(Dispatchers.Main) {
+                        buffering = false
+                        liveTag = true
+                    }
                 }
             }
 
             override fun onError(code: Int, msg: String) {
-                error = "Decoder error $code: $msg"
+                scope.launch(Dispatchers.Main) { error = "Decoder error $code: $msg" }
             }
 
             override fun onEof() {
@@ -102,17 +121,30 @@ fun StreamPreviewDialog(url: String, onDismiss: () -> Unit) {
             }
         }
 
-        // Start custom FFmpeg decoder
-        decoderHandle.value = FFmpegDecoder.open(url, frameCallback)
-        if (decoderHandle.value == 0L) {
-            error = "Failed to open stream"
+        // FIX 4: Open FFmpeg on IO thread to prevent ANR if network is slow
+        val openJob = scope.launch(Dispatchers.IO) {
+            val handle = FFmpegDecoder.open(url, frameCallback)
+            withContext(Dispatchers.Main) {
+                decoderHandle.value = handle
+                if (handle == 0L) {
+                    error = "Failed to open stream"
+                }
+            }
         }
 
         onDispose {
+            openJob.cancel()
             if (decoderHandle.value != 0L) {
-                FFmpegDecoder.close(decoderHandle.value)
+                // Close on IO thread to avoid blocking UI during teardown
+                scope.launch(Dispatchers.IO) {
+                    FFmpegDecoder.close(decoderHandle.value)
+                }
                 decoderHandle.value = 0L
             }
+            // Clean up reusable resources
+            reusableBitmap?.recycle()
+            reusableBitmap = null
+            reusableRgbaBuf = null
         }
     }
 
