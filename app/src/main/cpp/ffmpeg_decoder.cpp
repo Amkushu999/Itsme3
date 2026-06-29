@@ -22,11 +22,30 @@ extern "C" {
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
-  #define FG_TAG  "FACEGATE"
-  #define LOGFG(...) __android_log_print(ANDROID_LOG_DEBUG, FG_TAG, __VA_ARGS__)
+#define FG_TAG  "FACEGATE"
+#define LOGFG(...) __android_log_print(ANDROID_LOG_DEBUG, FG_TAG, __VA_ARGS__)
+
+// ── Custom FFmpeg log callback (prevents exit() on fatal errors) ─────────────
+static void ffmpeg_log_callback(void* ptr, int level, const char* fmt, va_list vl) {
+    if (level > AV_LOG_WARNING) return;  // Only log warnings and errors
+    
+    char buf[1024];
+    vsnprintf(buf, sizeof(buf), fmt, vl);
+    
+    switch (level) {
+        case AV_LOG_ERROR:
+            LOGE("FFmpeg: %s", buf);
+            break;
+        case AV_LOG_WARNING:
+            LOGI("FFmpeg: %s", buf);
+            break;
+        default:
+            LOGD("FFmpeg: %s", buf);
+            break;
+    }
+}
 
 // ── JNI global state ─────────────────────────────────────────────────────────
-
 static JavaVM*   g_jvm              = nullptr;
 static jmethodID g_onFrameAvailable = nullptr;
 static jmethodID g_onError          = nullptr;
@@ -34,7 +53,6 @@ static jmethodID g_onEof            = nullptr;
 static bool      g_methodsCached    = false;
 
 // ── Decoder context ───────────────────────────────────────────────────────────
-
 struct DecoderCtx {
     std::string          url;
     std::atomic<bool>    running{true};
@@ -57,11 +75,12 @@ struct DecoderCtx {
     AVFrame*             frameI420 = nullptr;
     AVPacket*            packet    = nullptr;
 
+    bool                 usingHwAccel = false;
+
     std::thread          thread;
 };
 
 // ── Thread attach/detach helpers ──────────────────────────────────────────────
-
 static JNIEnv* attachCurrentThread(bool& didAttach) {
     didAttach = false;
     JNIEnv* env = nullptr;
@@ -81,7 +100,6 @@ static void detachCurrentThread() {
 }
 
 // ── Protocol-aware demuxer options ───────────────────────────────────────────
-
 static void buildDemuxerOpts(AVDictionary** opts, const std::string& url) {
     std::string scheme;
     const auto sep = url.find("://");
@@ -108,8 +126,39 @@ static void buildDemuxerOpts(AVDictionary** opts, const std::string& url) {
     av_dict_set(opts, "probesize",       "1000000", 0);
 }
 
-// ── Stream open / close ───────────────────────────────────────────────────────
+// ── Try to find hardware decoder, fallback to software ───────────────────────
+static const AVCodec* findBestDecoder(enum AVCodecID codec_id, bool& hwAccel) {
+    hwAccel = false;
+    
+    // Try hardware decoder first (MediaCodec)
+    const char* hwDecoderName = nullptr;
+    switch (codec_id) {
+        case AV_CODEC_ID_H264:  hwDecoderName = "h264_mediacodec";  break;
+        case AV_CODEC_ID_HEVC:  hwDecoderName = "hevc_mediacodec";  break;
+        case AV_CODEC_ID_VP8:   hwDecoderName = "vp8_mediacodec";   break;
+        case AV_CODEC_ID_VP9:   hwDecoderName = "vp9_mediacodec";   break;
+        default: break;
+    }
+    
+    if (hwDecoderName) {
+        const AVCodec* hwCodec = avcodec_find_decoder_by_name(hwDecoderName);
+        if (hwCodec) {
+            LOGI("Using hardware decoder: %s", hwDecoderName);
+            hwAccel = true;
+            return hwCodec;
+        }
+        LOGI("Hardware decoder %s not available, falling back to software", hwDecoderName);
+    }
+    
+    // Fallback to software decoder
+    const AVCodec* swCodec = avcodec_find_decoder(codec_id);
+    if (swCodec) {
+        LOGI("Using software decoder: %s", swCodec->name);
+    }
+    return swCodec;
+}
 
+// ── Stream open / close ───────────────────────────────────────────────────────
 static bool openStream(DecoderCtx* ctx) {
     ctx->fmtCtx = avformat_alloc_context();
     if (!ctx->fmtCtx) {
@@ -127,6 +176,7 @@ static bool openStream(DecoderCtx* ctx) {
         char err[256];
         av_strerror(ret, err, sizeof(err));
         LOGE("avformat_open_input: %s  url=%s", err, ctx->url.c_str());
+        avformat_close_input(&ctx->fmtCtx);
         ctx->fmtCtx = nullptr;
         return false;
     }
@@ -134,6 +184,7 @@ static bool openStream(DecoderCtx* ctx) {
     if (avformat_find_stream_info(ctx->fmtCtx, nullptr) < 0) {
         LOGE("avformat_find_stream_info failed");
         avformat_close_input(&ctx->fmtCtx);
+        ctx->fmtCtx = nullptr;
         return false;
     }
 
@@ -141,14 +192,18 @@ static bool openStream(DecoderCtx* ctx) {
     if (ctx->videoIdx < 0) {
         LOGE("no video stream found");
         avformat_close_input(&ctx->fmtCtx);
+        ctx->fmtCtx = nullptr;
         return false;
     }
 
-    AVStream*      stream = ctx->fmtCtx->streams[ctx->videoIdx];
-    const AVCodec* codec  = avcodec_find_decoder(stream->codecpar->codec_id);
+    AVStream* stream = ctx->fmtCtx->streams[ctx->videoIdx];
+    bool hwAccel = false;
+    const AVCodec* codec = findBestDecoder(stream->codecpar->codec_id, hwAccel);
+    
     if (!codec) {
         LOGE("decoder not found for codec_id=%d", stream->codecpar->codec_id);
         avformat_close_input(&ctx->fmtCtx);
+        ctx->fmtCtx = nullptr;
         return false;
     }
 
@@ -156,25 +211,35 @@ static bool openStream(DecoderCtx* ctx) {
     if (!ctx->codecCtx) {
         LOGE("avcodec_alloc_context3 failed");
         avformat_close_input(&ctx->fmtCtx);
+        ctx->fmtCtx = nullptr;
         return false;
     }
 
     if (avcodec_parameters_to_context(ctx->codecCtx, stream->codecpar) < 0) {
         LOGE("avcodec_parameters_to_context failed");
         avcodec_free_context(&ctx->codecCtx);
+        ctx->codecCtx = nullptr;
         avformat_close_input(&ctx->fmtCtx);
+        ctx->fmtCtx = nullptr;
         return false;
     }
 
-    ctx->codecCtx->thread_count = 2;
-    ctx->codecCtx->thread_type  = FF_THREAD_SLICE;
+    // Only use multi-threading for software decoders
+    if (!hwAccel) {
+        ctx->codecCtx->thread_count = 2;
+        ctx->codecCtx->thread_type  = FF_THREAD_SLICE;
+    }
 
     if (avcodec_open2(ctx->codecCtx, codec, nullptr) < 0) {
         LOGE("avcodec_open2 failed");
         avcodec_free_context(&ctx->codecCtx);
+        ctx->codecCtx = nullptr;
         avformat_close_input(&ctx->fmtCtx);
+        ctx->fmtCtx = nullptr;
         return false;
     }
+
+    ctx->usingHwAccel = hwAccel;
 
     ctx->frame     = av_frame_alloc();
     ctx->frameI420 = av_frame_alloc();
@@ -186,7 +251,9 @@ static bool openStream(DecoderCtx* ctx) {
         if (ctx->frameI420) av_frame_free(&ctx->frameI420);
         if (ctx->packet)    av_packet_free(&ctx->packet);
         avcodec_free_context(&ctx->codecCtx);
+        ctx->codecCtx = nullptr;
         avformat_close_input(&ctx->fmtCtx);
+        ctx->fmtCtx = nullptr;
         return false;
     }
 
@@ -195,28 +262,28 @@ static bool openStream(DecoderCtx* ctx) {
     ctx->timeBase = stream->time_base;
     ctx->srcFmt   = -1;
 
-    LOGI("stream opened: %dx%d  codec=%s  url=%s",
+    LOGI("stream opened: %dx%d  codec=%s  hw=%s  url=%s",
          ctx->codecCtx->width, ctx->codecCtx->height,
-         codec->name, ctx->url.c_str());
+         codec->name, hwAccel ? "YES" : "NO", ctx->url.c_str());
     return true;
 }
 
 static void closeStream(DecoderCtx* ctx) {
-    if (ctx->packet)    { av_packet_free(&ctx->packet);    }
-    if (ctx->frame)     { av_frame_free(&ctx->frame);      }
-    if (ctx->frameI420) { av_frame_free(&ctx->frameI420);  }
-    if (ctx->swsCtx)    { sws_freeContext(ctx->swsCtx); ctx->swsCtx = nullptr; }
-    if (ctx->codecCtx)  { avcodec_free_context(&ctx->codecCtx); }
-    if (ctx->fmtCtx)    { avformat_close_input(&ctx->fmtCtx);   }
+    if (ctx->packet)    { av_packet_free(&ctx->packet);    ctx->packet = nullptr; }
+    if (ctx->frame)     { av_frame_free(&ctx->frame);      ctx->frame = nullptr; }
+    if (ctx->frameI420) { av_frame_free(&ctx->frameI420);  ctx->frameI420 = nullptr; }
+    if (ctx->swsCtx)    { sws_freeContext(ctx->swsCtx);    ctx->swsCtx = nullptr; }
+    if (ctx->codecCtx)  { avcodec_free_context(&ctx->codecCtx); ctx->codecCtx = nullptr; }
+    if (ctx->fmtCtx)    { avformat_close_input(&ctx->fmtCtx);   ctx->fmtCtx = nullptr; }
 
     ctx->videoIdx = -1;
     ctx->width.store(0);
     ctx->height.store(0);
     ctx->srcFmt = -1;
+    ctx->usingHwAccel = false;
 }
 
 // ── Frame delivery to Kotlin ──────────────────────────────────────────────────
-
 static void fireOnFrame(JNIEnv* env, jobject cb, AVFrame* f, jlong ptsUs) {
     const int w      = f->width;
     const int h      = f->height;
@@ -228,6 +295,7 @@ static void fireOnFrame(JNIEnv* env, jobject cb, AVFrame* f, jlong ptsUs) {
     jobject yBuf = env->NewDirectByteBuffer(f->data[0], ySize);
     jobject uBuf = env->NewDirectByteBuffer(f->data[1], uvSize);
     jobject vBuf = env->NewDirectByteBuffer(f->data[2], uvSize);
+    
     if (!yBuf || !uBuf || !vBuf) {
         LOGE("fireOnFrame: NewDirectByteBuffer failed");
         if (yBuf) env->DeleteLocalRef(yBuf);
@@ -250,7 +318,6 @@ static void fireOnFrame(JNIEnv* env, jobject cb, AVFrame* f, jlong ptsUs) {
 }
 
 // ── Convert decoded frame to tightly-packed I420 ─────────────────────────────
-
 static AVFrame* ensureI420(DecoderCtx* ctx, AVFrame* src) {
     const int w      = src->width;
     const int h      = src->height;
@@ -316,7 +383,6 @@ static AVFrame* ensureI420(DecoderCtx* ctx, AVFrame* src) {
 }
 
 // ── Main decode loop ──────────────────────────────────────────────────────────
-
 static void decodeLoop(DecoderCtx* ctx) {
     bool    didAttach = false;
     JNIEnv* env       = attachCurrentThread(didAttach);
@@ -326,7 +392,6 @@ static void decodeLoop(DecoderCtx* ctx) {
     }
 
     while (ctx->running.load()) {
-
         if (ctx->hotSwapping.load()) {
             std::string newUrl;
             {
@@ -442,9 +507,12 @@ static void decodeLoop(DecoderCtx* ctx) {
 }
 
 // ── JNI exports ──────────────────────────────────────────────────────────────
-
 extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void*) {
     g_jvm = vm;
+    
+    // Register custom log callback to prevent FFmpeg from calling exit()
+    av_log_set_callback(ffmpeg_log_callback);
+    
     return JNI_VERSION_1_6;
 }
 
@@ -456,7 +524,6 @@ Java_com_itsme_amkush_ffmpeg_FFmpegDecoder_open(
     if (!g_methodsCached) {
         jclass cbClass = env->GetObjectClass(cb);
         
-        // FIXED: Corrected JNI signature (IIJ, not IIIJ)
         g_onFrameAvailable = env->GetMethodID(
             cbClass, "onFrameAvailable",
             "(Ljava/nio/ByteBuffer;Ljava/nio/ByteBuffer;Ljava/nio/ByteBuffer;IIJ)V");
@@ -546,4 +613,13 @@ Java_com_itsme_amkush_ffmpeg_FFmpegDecoder_getHeight(
 {
     auto* ctx = reinterpret_cast<DecoderCtx*>(handle);
     return ctx ? ctx->height.load() : 0;
+}
+
+extern "C"
+JNIEXPORT jboolean JNICALL
+Java_com_itsme_amkush_ffmpeg_FFmpegDecoder_isUsingHardwareDecoder(
+    JNIEnv*, jclass, jlong handle)
+{
+    auto* ctx = reinterpret_cast<DecoderCtx*>(handle);
+    return ctx ? ctx->usingHwAccel : false;
 }
