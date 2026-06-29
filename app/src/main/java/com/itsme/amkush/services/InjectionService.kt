@@ -14,7 +14,10 @@ import com.itsme.amkush.hooks.ConfigUpdateReceiver
 import com.itsme.amkush.ipc.ISurfaceInjector
 import com.itsme.amkush.ipc.RemoteConfig
 import com.itsme.amkush.router.SurfaceRouter
+import android.net.Uri
+import android.util.Log
 import com.itsme.amkush.utils.Logger
+import java.io.File
 import java.nio.ByteBuffer
 
 /**
@@ -105,12 +108,14 @@ class InjectionService : Service() {
 
         override fun hotSwap(url: String) {
             Logger.d("$TAG hotSwap: $url")
+            Log.d("FACEGATE", "InjectionService: hotSwap -> " + url)
             if (url.isBlank()) {
                 stopDecoder()
             } else {
+                val resolved = resolveUrl(url) ?: return
                 val h = decoderHandle
                 if (h != 0L) {
-                    FFmpegDecoder.hotSwap(h, url)
+                    FFmpegDecoder.hotSwap(h, resolved)
                 } else {
                     startOrRestartDecoder(url)
                 }
@@ -193,16 +198,76 @@ class InjectionService : Service() {
         }
     }
 
-    private fun startOrRestartDecoder(url: String) {
+    private fun startOrRestartDecoder(rawUrl: String) {
         stopDecoder()
+        Log.d("FACEGATE", "InjectionService: startOrRestartDecoder raw=" + rawUrl)
+        val url = resolveUrl(rawUrl) ?: run {
+            Log.e("FACEGATE", "InjectionService: URL resolution failed, aborting: " + rawUrl)
+            Logger.e("$TAG URL resolution failed for: $rawUrl")
+            return
+        }
+        if (url != rawUrl) Log.d("FACEGATE", "InjectionService: URL normalized: " + rawUrl + " -> " + url)
+        if (url.startsWith("rtmp://") || url.startsWith("rtmps://"))
+            Log.d("FACEGATE", "InjectionService: RTMP stream — ensure port 1935 is reachable")
         Logger.d("$TAG opening FFmpeg decoder: $url")
         val handle = FFmpegDecoder.open(url, frameCallback)
         if (handle == 0L) {
+            Log.e("FACEGATE", "InjectionService: FFmpegDecoder.open FAILED for: " + url)
             Logger.e("$TAG FFmpegDecoder.open failed for: $url")
         } else {
             decoderHandle = handle
+            Log.d("FACEGATE", "InjectionService: decoder running handle=" + handle + " url=" + url)
             Logger.d("$TAG decoder running (handle=$handle)")
         }
+    }
+
+    // Add scheme if missing. Defaults to http:// (some FFmpeg builds lack TLS).
+    private fun normalizeUrl(raw: String): String {
+        val t = raw.trim()
+        return when {
+            t.startsWith("http://")    -> t
+            t.startsWith("https://")   -> t
+            t.startsWith("rtmp://")    -> t
+            t.startsWith("rtmps://")   -> t
+            t.startsWith("rtsp://")    -> t
+            t.startsWith("rtsps://")   -> t
+            t.startsWith("udp://")     -> t
+            t.startsWith("rtp://")     -> t
+            t.startsWith("srt://")     -> t
+            t.startsWith("file://")    -> t
+            t.startsWith("content://") -> t
+            t.startsWith("/")          -> "file://" + t
+            else                       -> "http://" + t
+        }
+    }
+
+    // Resolve URL for native FFmpeg. Copies content:// URIs to a temp file
+    // because Android content URIs are not understood by native FFmpeg.
+    private fun resolveUrl(raw: String): String? {
+        val normalized = normalizeUrl(raw)
+        if (!normalized.startsWith("content://")) return normalized
+        Log.d("FACEGATE", "InjectionService: resolving content:// URI -> temp file")
+        return try {
+            clearMediaCache()
+            val uri = Uri.parse(normalized)
+            val tmp = File(cacheDir, "fg_media_" + System.currentTimeMillis() + ".tmp")
+            contentResolver.openInputStream(uri)?.use { input ->
+                tmp.outputStream().use { output -> input.copyTo(output) }
+            }
+            Log.d("FACEGATE", "InjectionService: content:// resolved -> " + tmp.absolutePath + " (" + tmp.length() + " bytes)")
+            tmp.absolutePath
+        } catch (e: Exception) {
+            Log.e("FACEGATE", "InjectionService: failed to resolve content URI: " + e.message)
+            Logger.e("$TAG failed to resolve content URI: " + e.message)
+            null
+        }
+    }
+
+    // Delete stale temp media files left from a previous session.
+    private fun clearMediaCache() {
+        try {
+            cacheDir.listFiles()?.filter { it.name.startsWith("fg_media_") }?.forEach { it.delete() }
+        } catch (_: Throwable) {}
     }
 
     private fun stopDecoder() {
