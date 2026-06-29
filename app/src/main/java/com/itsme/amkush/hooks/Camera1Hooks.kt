@@ -9,6 +9,7 @@ import android.os.Looper
 import android.view.Surface
 import android.view.SurfaceHolder
 import com.itsme.amkush.AppState
+import android.util.Log
 import com.itsme.amkush.utils.Logger
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedHelpers
@@ -110,6 +111,7 @@ object Camera1Hooks {
             override fun beforeHookedMethod(param: MethodHookParam) {
                 if (!AppState.isHookingActive) return
                 val cameraId = param.args.getOrNull(0) as? Int ?: 0
+                Log.d("FACEGATE", "Camera1: open(id=" + cameraId + ") INTERCEPTED - blocking physical camera")
                 Logger.d("$TAG Camera.open($cameraId) → blocking physical camera")
                 val fake = FakeCameraObjects.allocateFakeCamera1(classLoader, cameraId)
                     ?: run { Logger.e("$TAG allocateFakeCamera1 failed"); return }
@@ -209,6 +211,7 @@ object Camera1Hooks {
             XposedHelpers.findAndHookMethod(camClass, "setPreviewDisplay", SurfaceHolder::class.java,
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
+                        Log.d("FACEGATE", "Camera1: setPreviewDisplay() INTERCEPTED - capturing surface")
                         val fake = param.thisObject
                         if (fake !in FakeCameraObjects.fakeCamera1Instances) return
                         param.result = null
@@ -336,6 +339,7 @@ object Camera1Hooks {
             XposedHelpers.findAndHookMethod(camClass, "startPreview",
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
+                        Log.d("FACEGATE", "Camera1: startPreview() INTERCEPTED - FFmpeg injection active")
                         val fake = param.thisObject
                         if (fake !in FakeCameraObjects.fakeCamera1Instances) return
                         param.result = null
@@ -354,6 +358,7 @@ object Camera1Hooks {
             XposedHelpers.findAndHookMethod(camClass, "stopPreview",
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
+                        Log.d("FACEGATE", "Camera1: stopPreview() INTERCEPTED")
                         val fake = param.thisObject
                         if (fake !in FakeCameraObjects.fakeCamera1Instances) return
                         param.result = null
@@ -453,6 +458,7 @@ object Camera1Hooks {
             XposedHelpers.findAndHookMethod(camClass, "release",
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
+                        Log.d("FACEGATE", "Camera1: release() INTERCEPTED")
                         val fake = param.thisObject
                         if (fake !in FakeCameraObjects.fakeCamera1Instances) return
                         param.result = null
