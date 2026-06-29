@@ -25,21 +25,16 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.itsme.amkush.ffmpeg.FFmpegDecoder
+import com.itsme.amkush.libyuv.LibYuv
 import java.nio.ByteBuffer
 
 private val Violet  = Color(0xFF6C63FF)
 private val BgDark  = Color(0xFF0D0D18)
-private val Surface = Color(0x12FFFFFF)
 private val Border  = Color(0x1AFFFFFF)
 private val TextMid = Color(0x88FFFFFF)
 
-private const val PREVIEW_W = 640
-private const val PREVIEW_H = 360
-
 @Composable
 fun StreamPreviewDialog(url: String, onDismiss: () -> Unit) {
-    val context = LocalContext.current
-
     var buffering by remember { mutableStateOf(true) }
     var error     by remember { mutableStateOf<String?>(null) }
     var liveTag   by remember { mutableStateOf(false) }
@@ -53,85 +48,66 @@ fun StreamPreviewDialog(url: String, onDismiss: () -> Unit) {
                 yBuf: ByteBuffer, uBuf: ByteBuffer, vBuf: ByteBuffer,
                 width: Int, height: Int, ptsUs: Long
             ) {
-                // Convert I420 to RGBA for display
-                val rgbaBuf = ByteBuffer.allocate(width * height * 4)
-                
-                // Simple I420 to RGBA conversion
-                val ySize = width * height
-                val uvSize = (width / 2) * (height / 2)
-                
-                for (row in 0 until height) {
-                    for (col in 0 until width) {
-                        val yIndex = row * width + col
-                        val uvRow = row / 2
-                        val uvCol = col / 2
-                        val uvIndex = ySize + uvRow * (width / 2) + uvCol
-                        
-                        val y = yBuf.get(yIndex).toInt() and 0xFF
-                        val u = uBuf.get(uvIndex - ySize).toInt() and 0xFF
-                        val v = vBuf.get(uvIndex - ySize + uvSize).toInt() and 0xFF
-                        
-                        // YUV to RGB conversion
-                        val c = y - 16
-                        val d = u - 128
-                        val e = v - 128
-                        
-                        var r = (298 * c + 409 * e + 128) shr 8
-                        var g = (298 * c - 100 * d - 208 * e + 128) shr 8
-                        var b = (298 * c + 516 * d + 128) shr 8
-                        
-                        r = r.coerceIn(0, 255)
-                        g = g.coerceIn(0, 255)
-                        b = b.coerceIn(0, 255)
-                        
-                        val rgbaIndex = (row * width + col) * 4
-                        rgbaBuf.put(rgbaIndex, r.toByte())
-                        rgbaBuf.put(rgbaIndex + 1, g.toByte())
-                        rgbaBuf.put(rgbaIndex + 2, b.toByte())
-                        rgbaBuf.put(rgbaIndex + 3, 255.toByte())
-                    }
+                // 1. Allocate Direct ByteBuffer for RGBA output
+                val rgbaSize = width * height * 4
+                val rgbaBuf = ByteBuffer.allocateDirect(rgbaSize)
+
+                // 2. Convert I420 to RGBA using your custom LibYuv JNI wrapper (Extremely fast)
+                val ret = LibYuv.convertInto(
+                    srcY = yBuf, srcU = uBuf, srcV = vBuf,
+                    srcW = width, srcH = height,
+                    srcStrideY = width, srcStrideU = (width + 1) / 2, srcStrideV = (width + 1) / 2,
+                    dstW = width, dstH = height,
+                    dstFmt = android.graphics.PixelFormat.RGBA_8888,
+                    dst = rgbaBuf
+                )
+
+                if (ret != 0) {
+                    error = "LibYuv conversion failed: $ret"
+                    return
                 }
-                
+
+                // 3. Create Bitmap and copy pixels
                 rgbaBuf.rewind()
-                
                 val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
                 bmp.copyPixelsFromBuffer(rgbaBuf)
-                
+
+                // 4. Draw to SurfaceView
                 val holder = holderRef.value
                 if (holder != null && holder.surface.isValid) {
                     val canvas = holder.lockCanvas()
                     if (canvas != null) {
                         try {
-                            val dst = android.graphics.Rect(0, 0, canvas.width, canvas.height)
-                            canvas.drawBitmap(bmp, null, dst, null)
+                            val dstRect = android.graphics.Rect(0, 0, canvas.width, canvas.height)
+                            canvas.drawBitmap(bmp, null, dstRect, null)
                         } finally {
                             holder.unlockCanvasAndPost(canvas)
                         }
                     }
                 }
                 bmp.recycle()
-                
+
                 if (!liveTag) {
                     buffering = false
                     liveTag = true
                 }
             }
-            
+
             override fun onError(code: Int, msg: String) {
                 error = "Decoder error $code: $msg"
             }
-            
+
             override fun onEof() {
-                // File ended
+                // Stream ended
             }
         }
-        
-        // Start decoder
+
+        // Start custom FFmpeg decoder
         decoderHandle.value = FFmpegDecoder.open(url, frameCallback)
         if (decoderHandle.value == 0L) {
             error = "Failed to open stream"
         }
-        
+
         onDispose {
             if (decoderHandle.value != 0L) {
                 FFmpegDecoder.close(decoderHandle.value)
@@ -152,41 +128,21 @@ fun StreamPreviewDialog(url: String, onDismiss: () -> Unit) {
                 .border(1.dp, Border, RoundedCornerShape(20.dp))
         ) {
             Column {
-                // Title bar
                 Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Column {
                         Text("Stream Preview", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                        Text(
-                            url.take(40) + if (url.length > 40) "…" else "",
-                            color = TextMid, fontSize = 9.sp, fontFamily = FontFamily.Monospace
-                        )
+                        Text(url.take(40) + if (url.length > 40) "…" else "", color = TextMid, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
                     }
-                    Box(
-                        modifier = Modifier
-                            .size(28.dp)
-                            .clip(CircleShape)
-                            .background(Color(0x1AFFFFFF))
-                            .clickable { onDismiss() },
-                        contentAlignment = Alignment.Center
-                    ) {
+                    Box(modifier = Modifier.size(28.dp).clip(CircleShape).background(Color(0x1AFFFFFF)).clickable { onDismiss() }, contentAlignment = Alignment.Center) {
                         Text("✕", color = TextMid, fontSize = 12.sp)
                     }
                 }
 
-                // Video surface
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(220.dp)
-                        .background(Color.Black),
-                    contentAlignment = Alignment.Center
-                ) {
+                Box(modifier = Modifier.fillMaxWidth().height(220.dp).background(Color.Black), contentAlignment = Alignment.Center) {
                     AndroidView(
                         factory = { ctx ->
                             SurfaceView(ctx).apply {
@@ -201,55 +157,25 @@ fun StreamPreviewDialog(url: String, onDismiss: () -> Unit) {
                     )
 
                     if (buffering && error == null) {
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            CircularProgressIndicator(
-                                color = Violet,
-                                modifier = Modifier.size(32.dp),
-                                strokeWidth = 2.dp
-                            )
-                            Text("Connecting via FFmpeg…", color = TextMid, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            CircularProgressIndicator(color = Violet, modifier = Modifier.size(32.dp), strokeWidth = 2.dp)
+                            Text("Connecting via Custom FFmpeg…", color = TextMid, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
                         }
                     }
 
                     if (error != null) {
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             Text("⚠", fontSize = 28.sp)
                             Text(error!!, color = Color(0xFFFF4D6D), fontSize = 12.sp, fontFamily = FontFamily.Monospace)
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(Color(0x1AFF4D6D))
-                                    .clickable { onDismiss() }
-                                    .padding(horizontal = 16.dp, vertical = 8.dp)
-                            ) {
+                            Box(modifier = Modifier.clip(RoundedCornerShape(8.dp)).background(Color(0x1AFF4D6D)).clickable { onDismiss() }.padding(horizontal = 16.dp, vertical = 8.dp)) {
                                 Text("Close", color = Color(0xFFFF4D6D), fontSize = 12.sp)
                             }
                         }
                     }
                 }
 
-                // Bottom controls
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 12.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(Color(0x1AFFFFFF))
-                            .border(1.dp, Border, RoundedCornerShape(10.dp))
-                            .clickable { onDismiss() }
-                            .padding(horizontal = 14.dp, vertical = 8.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
+                Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Box(modifier = Modifier.clip(RoundedCornerShape(10.dp)).background(Color(0x1AFFFFFF)).border(1.dp, Border, RoundedCornerShape(10.dp)).clickable { onDismiss() }.padding(horizontal = 14.dp, vertical = 8.dp), contentAlignment = Alignment.Center) {
                         Text("Stop & Close", color = TextMid, fontSize = 12.sp)
                     }
 
@@ -263,21 +189,8 @@ fun StreamPreviewDialog(url: String, onDismiss: () -> Unit) {
                         buffering     -> "BUFFERING"
                         else          -> "LIVE"
                     }
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(statusColor.copy(0.15f))
-                            .border(1.dp, statusColor.copy(0.3f), RoundedCornerShape(10.dp))
-                            .padding(horizontal = 14.dp, vertical = 8.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            statusText,
-                            color = statusColor,
-                            fontSize = 11.sp,
-                            fontFamily = FontFamily.Monospace,
-                            fontWeight = FontWeight.Bold
-                        )
+                    Box(modifier = Modifier.clip(RoundedCornerShape(10.dp)).background(statusColor.copy(0.15f)).border(1.dp, statusColor.copy(0.3f), RoundedCornerShape(10.dp)).padding(horizontal = 14.dp, vertical = 8.dp), contentAlignment = Alignment.Center) {
+                        Text(statusText, color = statusColor, fontSize = 11.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
                     }
                 }
             }
