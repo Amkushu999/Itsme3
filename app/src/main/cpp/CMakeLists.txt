@@ -20,6 +20,18 @@ if(NOT EXISTS "${FFMPEG_ABI_DIR}/lib")
         "ffmpeg.dir in local.properties.")
 endif()
 
+# ── OpenSSL prebuilt root directory ───────────────────────────────────────────
+if(NOT DEFINED OPENSSL_ROOT)
+    if(DEFINED ENV{OPENSSL_ROOT})
+        set(OPENSSL_ROOT $ENV{OPENSSL_ROOT})
+    else()
+        set(OPENSSL_ROOT "${CMAKE_SOURCE_DIR}/../openssl-android")
+        message(WARNING "OPENSSL_ROOT not set — defaulting to ${OPENSSL_ROOT}")
+    endif()
+endif()
+
+set(OPENSSL_ABI_DIR "${OPENSSL_ROOT}/${ANDROID_ABI}")
+
 # ── FFmpeg prebuilt static libs ───────────────────────────────────────────────
 foreach(_lib avformat avcodec avutil swresample swscale)
     add_library(${_lib} STATIC IMPORTED)
@@ -27,6 +39,17 @@ foreach(_lib avformat avcodec avutil swresample swscale)
         IMPORTED_LOCATION "${FFMPEG_ABI_DIR}/lib/lib${_lib}.a"
     )
 endforeach()
+
+# ── OpenSSL prebuilt static libs ──────────────────────────────────────────────
+add_library(ssl STATIC IMPORTED)
+set_target_properties(ssl PROPERTIES
+    IMPORTED_LOCATION "${OPENSSL_ABI_DIR}/lib/libssl.a"
+)
+
+add_library(crypto STATIC IMPORTED)
+set_target_properties(crypto PROPERTIES
+    IMPORTED_LOCATION "${OPENSSL_ABI_DIR}/lib/libcrypto.a"
+)
 
 # ── libyuv from source ────────────────────────────────────────────────────────
 set(LIBYUV_SRC_DIR "${CMAKE_SOURCE_DIR}/libyuv-src")
@@ -38,20 +61,15 @@ if(NOT EXISTS "${LIBYUV_SRC_DIR}/include/libyuv.h")
         "${LIBYUV_SRC_DIR}")
 endif()
 
-# Collect libyuv sources
 file(GLOB LIBYUV_SRCS "${LIBYUV_SRC_DIR}/source/*.cc")
 
-# EXCLUDE SVE/SME source files — these are for server ARM, not Android phones
 list(FILTER LIBYUV_SRCS EXCLUDE REGEX ".*_sve\\.cc$")
 list(FILTER LIBYUV_SRCS EXCLUDE REGEX ".*_sve2\\.cc$")
 list(FILTER LIBYUV_SRCS EXCLUDE REGEX ".*_sme\\.cc$")
 
-# Add the library
 add_library(yuv STATIC ${LIBYUV_SRCS})
 target_include_directories(yuv PUBLIC "${LIBYUV_SRC_DIR}/include")
 
-# CRITICAL FIX: Tell libyuv's dispatcher code to NOT call SVE/SVE2 functions
-# Without these defines, row_any.cc will try to link SVE2 functions that we excluded
 target_compile_definitions(yuv PRIVATE
     LIBYUV_DISABLE_SVE
     LIBYUV_DISABLE_SVE2
@@ -60,8 +78,6 @@ target_compile_definitions(yuv PRIVATE
 
 target_compile_options(yuv PRIVATE -O3 -fPIC)
 
-# Per-file flags: only these files use dotprod+i8mm instructions
-# The rest of the library stays at the baseline arm64 target for compatibility
 if(ANDROID_ABI STREQUAL "arm64-v8a")
     set_source_files_properties(
         "${LIBYUV_SRC_DIR}/source/compare_neon64.cc"
@@ -86,8 +102,10 @@ target_compile_options(ffmpeg_decoder PRIVATE
     -O3 -fPIC -ffast-math -frtti -fexceptions -DNDEBUG
 )
 
+# Link order matters: ssl needs crypto, avformat needs ssl
 target_link_libraries(ffmpeg_decoder
     avformat avcodec avutil swresample swscale
+    ssl crypto
     ${z-lib} ${log-lib} ${android-lib}
 )
 
