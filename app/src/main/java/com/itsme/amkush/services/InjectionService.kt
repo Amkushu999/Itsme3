@@ -91,39 +91,52 @@ class InjectionService : Service() {
             fps: IntArray,
             sessionId: String
         ) {
-            Logger.d("$TAG registerSurfaces: ${surfaces.size} surface(s) session=$sessionId")
+            Logger.d(Logger.INJECTION, "$TAG registerSurfaces: ${surfaces.size} surface(s)  session=$sessionId  widths=${widths.toList()}  heights=${heights.toList()}  formats=${formats.toList()}  fps=${fps.toList()}")
             SurfaceRouter.registerSession(sessionId, surfaces, widths, heights, formats, fps)
             ensureDecoderRunning()
         }
 
         override fun unregisterSession(sessionId: String) {
-            Logger.d("$TAG unregisterSession: $sessionId")
+            Logger.d(Logger.INJECTION, "$TAG unregisterSession: $sessionId")
             SurfaceRouter.unregisterSession(sessionId)
         }
 
         override fun startDecoder(url: String) {
-            Logger.d("$TAG startDecoder: $url")
+            Logger.d(Logger.INJECTION, "$TAG startDecoder: url=$url")
             if (url.isNotBlank()) startOrRestartDecoder(url)
         }
 
         override fun hotSwap(url: String) {
-            Logger.d("$TAG hotSwap: $url")
-            Log.d("FACEGATE", "InjectionService: hotSwap -> " + url)
+            Logger.d(Logger.INJECTION, "$TAG hotSwap: url=$url")
+            Log.d("FACEGATE", "InjectionService: hotSwap -> $url")
             if (url.isBlank()) {
+                Logger.d(Logger.INJECTION, "$TAG hotSwap blank — stopping decoder")
                 stopDecoder()
-            } else {
-                val resolved = resolveUrl(url) ?: return
+                return
+            }
+            // Resolve URL outside the lock (can involve disk I/O for content:// URIs)
+            val resolved = resolveUrl(url) ?: run {
+                Logger.e(Logger.INJECTION, "$TAG hotSwap: URL resolution failed for $url")
+                return
+            }
+            // BUG FIX: Read decoderHandle and call hotSwap inside the same lock used by
+            // startOrRestartDecoder/stopDecoder. Without this, stopDecoder() can set
+            // decoderHandle=0 and free the native handle between our read and our call,
+            // resulting in FFmpegDecoder.hotSwap() being invoked on a closed/freed handle.
+            synchronized(this@InjectionService) {
                 val h = decoderHandle
                 if (h != 0L) {
+                    Logger.d(Logger.INJECTION, "$TAG hotSwap: signalling native handle=$h  new=$resolved")
                     FFmpegDecoder.hotSwap(h, resolved)
                 } else {
+                    Logger.d(Logger.INJECTION, "$TAG hotSwap: no running decoder — starting fresh")
                     startOrRestartDecoder(url)
                 }
             }
         }
 
         override fun stopAll() {
-            Logger.d("$TAG stopAll")
+            Logger.d(Logger.INJECTION, "$TAG stopAll — tearing down all sessions and decoder")
             SurfaceRouter.unregisterAll()
             stopDecoder()
         }
@@ -137,7 +150,8 @@ class InjectionService : Service() {
         AppState.context = applicationContext
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, createNotification())
-        Logger.d("$TAG created — FFmpeg native decoder ready")
+        Logger.i(Logger.INJECTION, "$TAG created — FFmpeg native decoder ready")
+        Log.d("FACEGATE", "InjectionService: onCreate — foreground service started")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -161,12 +175,13 @@ class InjectionService : Service() {
     override fun onBind(intent: Intent?): IBinder = binderImpl
 
     override fun onDestroy() {
+        Logger.i(Logger.INJECTION, "$TAG onDestroy — tearing down decoder and all sessions")
         SurfaceRouter.unregisterAll()
         stopDecoder()
         RemoteConfig.clearAll(this)
         sendConfigBroadcast(streamUrl = null, mediaUri = null, active = false)
         isRunning = false
-        Logger.d("$TAG destroyed")
+        Log.d("FACEGATE", "InjectionService: onDestroy — service stopped")
         super.onDestroy()
     }
 
@@ -198,26 +213,33 @@ class InjectionService : Service() {
         }
     }
 
+    // BUG FIX: @Synchronized prevents two concurrent Binder threads from both calling
+    // FFmpegDecoder.open() simultaneously, which would leak the first handle.
+    @Synchronized
     private fun startOrRestartDecoder(rawUrl: String) {
         stopDecoder()
-        Log.d("FACEGATE", "InjectionService: startOrRestartDecoder raw=" + rawUrl)
+        Logger.d(Logger.INJECTION, "$TAG startOrRestartDecoder raw=$rawUrl")
+        Log.d("FACEGATE", "InjectionService: startOrRestartDecoder raw=$rawUrl")
         val url = resolveUrl(rawUrl) ?: run {
-            Log.e("FACEGATE", "InjectionService: URL resolution failed, aborting: " + rawUrl)
-            Logger.e("$TAG URL resolution failed for: $rawUrl")
+            Logger.e(Logger.INJECTION, "$TAG URL resolution failed, aborting: $rawUrl")
+            Log.e("FACEGATE", "InjectionService: URL resolution failed: $rawUrl")
             return
         }
-        if (url != rawUrl) Log.d("FACEGATE", "InjectionService: URL normalized: " + rawUrl + " -> " + url)
+        if (url != rawUrl) {
+            Logger.d(Logger.INJECTION, "$TAG URL normalized: $rawUrl → $url")
+            Log.d("FACEGATE", "InjectionService: URL normalized: $rawUrl → $url")
+        }
         if (url.startsWith("rtmp://") || url.startsWith("rtmps://"))
-            Log.d("FACEGATE", "InjectionService: RTMP stream — ensure port 1935 is reachable")
-        Logger.d("$TAG opening FFmpeg decoder: $url")
+            Logger.i(Logger.INJECTION, "$TAG RTMP stream — ensure port 1935 is reachable")
+        Logger.d(Logger.INJECTION, "$TAG FFmpegDecoder.open url=$url")
         val handle = FFmpegDecoder.open(url, frameCallback)
         if (handle == 0L) {
-            Log.e("FACEGATE", "InjectionService: FFmpegDecoder.open FAILED for: " + url)
-            Logger.e("$TAG FFmpegDecoder.open failed for: $url")
+            Logger.e(Logger.INJECTION, "$TAG FFmpegDecoder.open FAILED for: $url")
+            Log.e("FACEGATE", "InjectionService: FFmpegDecoder.open FAILED url=$url")
         } else {
             decoderHandle = handle
-            Log.d("FACEGATE", "InjectionService: decoder running handle=" + handle + " url=" + url)
-            Logger.d("$TAG decoder running (handle=$handle)")
+            Logger.d(Logger.INJECTION, "$TAG decoder running handle=$handle  hw=${FFmpegDecoder.isUsingHardwareDecoder(handle)}  url=$url")
+            Log.d("FACEGATE", "InjectionService: decoder running handle=$handle url=$url")
         }
     }
 
@@ -245,20 +267,38 @@ class InjectionService : Service() {
     // because Android content URIs are not understood by native FFmpeg.
     private fun resolveUrl(raw: String): String? {
         val normalized = normalizeUrl(raw)
-        if (!normalized.startsWith("content://")) return normalized
+        if (!normalized.startsWith("content://")) {
+            Logger.d(Logger.INJECTION, "$TAG resolveUrl: passthrough url=$normalized")
+            return normalized
+        }
+        Logger.d(Logger.INJECTION, "$TAG resolveUrl: content:// URI — copying to temp file")
         Log.d("FACEGATE", "InjectionService: resolving content:// URI -> temp file")
+        // BUG FIX (original): Create temp file reference before try-block so we can delete it on failure.
+        val tmp = File(cacheDir, "fg_media_${System.currentTimeMillis()}.tmp")
         return try {
             clearMediaCache()
             val uri = Uri.parse(normalized)
-            val tmp = File(cacheDir, "fg_media_" + System.currentTimeMillis() + ".tmp")
-            contentResolver.openInputStream(uri)?.use { input ->
+            // BUG FIX: openInputStream() can return null (e.g. provider returns no stream).
+            // Previously the null case fell through the ?.use block silently, then returned
+            // tmp.absolutePath pointing at an empty/non-existent file — FFmpeg would open it
+            // and immediately hit EOF with no useful error.
+            val inputStream = contentResolver.openInputStream(uri) ?: run {
+                tmp.delete()
+                Logger.e(Logger.INJECTION, "$TAG resolveUrl: openInputStream returned null for $uri")
+                Log.e("FACEGATE", "InjectionService: openInputStream null for $uri")
+                return null
+            }
+            inputStream.use { input ->
                 tmp.outputStream().use { output -> input.copyTo(output) }
             }
-            Log.d("FACEGATE", "InjectionService: content:// resolved -> " + tmp.absolutePath + " (" + tmp.length() + " bytes)")
+            Logger.d(Logger.INJECTION, "$TAG content:// resolved → ${tmp.absolutePath}  (${tmp.length()} bytes)")
+            Log.d("FACEGATE", "InjectionService: content:// resolved -> ${tmp.absolutePath} (${tmp.length()} bytes)")
             tmp.absolutePath
         } catch (e: Exception) {
-            Log.e("FACEGATE", "InjectionService: failed to resolve content URI: " + e.message)
-            Logger.e("$TAG failed to resolve content URI: " + e.message)
+            // Delete partial/corrupt temp file so FFmpeg never gets it
+            tmp.delete()
+            Logger.e(Logger.INJECTION, "$TAG failed to resolve content URI: ${e.message}", e)
+            Log.e("FACEGATE", "InjectionService: failed to resolve content URI: ${e.message}")
             null
         }
     }
@@ -270,12 +310,15 @@ class InjectionService : Service() {
         } catch (_: Throwable) {}
     }
 
+    // BUG FIX: @Synchronized pairs with startOrRestartDecoder to prevent handle leaks
+    @Synchronized
     private fun stopDecoder() {
         val h = decoderHandle
         if (h != 0L) {
+            Logger.d(Logger.INJECTION, "$TAG stopDecoder: closing handle=$h")
             decoderHandle = 0L
             try { FFmpegDecoder.close(h) }
-            catch (e: Throwable) { Logger.e("$TAG stopDecoder: ${e.message}") }
+            catch (e: Throwable) { Logger.e(Logger.INJECTION, "$TAG stopDecoder error: ${e.message}", e) }
         }
     }
 

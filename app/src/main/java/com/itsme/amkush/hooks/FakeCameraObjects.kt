@@ -167,6 +167,7 @@ object FakeCameraObjects {
     fun startCaptureHeartbeat(fakeSession: Any, captureCallback: Any?, requestObject: Any?) {
         if (captureCallback == null) return
         stopCaptureHeartbeat(fakeSession)
+        Logger.d(Logger.HOOK, "$TAG startCaptureHeartbeat: session=${fakeSession.javaClass.simpleName}")
 
         val future = scheduler.scheduleAtFixedRate({
             try {
@@ -178,7 +179,10 @@ object FakeCameraObjects {
                 val requestParam  = requestObject
                 val resultParam   = buildFakeCaptureResult(fakeSession) ?: return@scheduleAtFixedRate
                 completeMethod.invoke(captureCallback, sessionParam, requestParam, resultParam)
-            } catch (_: Throwable) {}
+            } catch (t: Throwable) {
+                // BUG FIX: Was silently swallowing all exceptions, making heartbeat failures impossible to debug.
+                Logger.e(Logger.HOOK, "$TAG captureHeartbeat onCaptureCompleted error: ${t.message}", t)
+            }
         }, 33, 33, TimeUnit.MILLISECONDS)
 
         captureSchedulers[fakeSession] = future

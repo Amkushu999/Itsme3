@@ -19,13 +19,13 @@ object DenyListHooks {
 
         val denyList = SharedPrefs.getDenyList()
         if (denyList.isEmpty()) {
-            Logger.d("Deny list is empty, skipping")
+            Logger.d(Logger.HOOK, "Deny list is empty, skipping")
             return
         }
 
         try {
             hookPackageManager(lpparam, denyList)
-            Logger.d("Deny list hooks installed for ${lpparam.packageName}")
+            Logger.d(Logger.HOOK, "Deny list hooks installed for ${lpparam.packageName}")
         } catch (e: Throwable) {
             Logger.e("Deny list hooks failed", e)
         }
@@ -51,7 +51,7 @@ object DenyListHooks {
                             !denyList.contains(packageName)
                         }
                         param.result = filtered
-                        Logger.d("Filtered ${apps.size - filtered.size} apps from deny list")
+                        Logger.d(Logger.HOOK, "Filtered ${apps.size - filtered.size} apps from deny list")
                     }
                 }
             }
@@ -71,7 +71,7 @@ object DenyListHooks {
                             !denyList.contains(packageName)
                         }
                         param.result = filtered
-                        Logger.d("Filtered ${packages.size - filtered.size} packages from deny list")
+                        Logger.d(Logger.HOOK, "Filtered ${packages.size - filtered.size} packages from deny list")
                     }
                 }
             }
@@ -88,7 +88,7 @@ object DenyListHooks {
                     val packageName = param.args[0] as? String
                     if (packageName != null && denyList.contains(packageName)) {
                         param.result = null
-                        Logger.d("Blocked getPackageInfo for: $packageName")
+                        Logger.d(Logger.HOOK, "Blocked getPackageInfo for: $packageName")
                     }
                 }
             }
@@ -105,7 +105,7 @@ object DenyListHooks {
                     val packageName = param.args[0] as? String
                     if (packageName != null && denyList.contains(packageName)) {
                         param.result = null
-                        Logger.d("Blocked getApplicationInfo for: $packageName")
+                        Logger.d(Logger.HOOK, "Blocked getApplicationInfo for: $packageName")
                     }
                 }
             }
@@ -124,7 +124,7 @@ object DenyListHooks {
                     val packageName = component?.packageName
                     if (packageName != null && denyList.contains(packageName)) {
                         param.result = null
-                        Logger.d("Blocked resolveActivity for: $packageName")
+                        Logger.d(Logger.HOOK, "Blocked resolveActivity for: $packageName")
                     }
                 }
             }

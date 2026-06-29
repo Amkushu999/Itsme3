@@ -91,7 +91,7 @@ object ClonerBypassHooks {
             hookPathChecks(lpparam)
             hookRuntimeExec(lpparam)
             hookActivityThread(lpparam)
-            Logger.d("Cloner bypass hooks installed")
+            Logger.d(Logger.HOOK, "Cloner bypass hooks installed")
         } catch (e: Throwable) {
             Logger.e("Cloner bypass hooks failed", e)
         }
@@ -111,7 +111,7 @@ object ClonerBypassHooks {
 
                         if (clonerPaths.any { path.contains(it) }) {
                             param.result = false
-                            Logger.d("Blocked cloner file check: $path")
+                            Logger.d(Logger.HOOK, "Blocked cloner file check: $path")
                         }
 
                         if (path.contains("/data/data/") && path.contains("/clone/")) {
@@ -165,7 +165,7 @@ object ClonerBypassHooks {
                                 "/data/data/${AppState.targetPackage}/"
                             )
                             param.result = originalPath
-                            Logger.d("Spoofed cloner path: $path -> $originalPath")
+                            Logger.d(Logger.HOOK, "Spoofed cloner path: $path -> $originalPath")
                         }
                     }
                 }
@@ -234,7 +234,7 @@ object ClonerBypassHooks {
                         val packageName = param.args[0] as? String
                         if (packageName != null && clonerPackages.contains(packageName)) {
                             param.result = null
-                            Logger.d("Blocked cloner package info: $packageName")
+                            Logger.d(Logger.HOOK, "Blocked cloner package info: $packageName")
                         }
                     }
                 }
@@ -250,7 +250,7 @@ object ClonerBypassHooks {
                         val packageName = param.args[0] as? String
                         if (packageName != null && clonerPackages.contains(packageName)) {
                             param.result = null
-                            Logger.d("Blocked cloner application info: $packageName")
+                            Logger.d(Logger.HOOK, "Blocked cloner application info: $packageName")
                         }
                     }
                 }
@@ -270,7 +270,7 @@ object ClonerBypassHooks {
                     !clonerPackages.contains(pkgName)
                 }
                 param.result = filtered
-                Logger.d("Filtered cloner packages")
+                Logger.d(Logger.HOOK, "Filtered cloner packages")
             }
         } catch (e: Throwable) {
             Logger.e("Failed to filter cloner packages", e)
@@ -295,7 +295,7 @@ object ClonerBypassHooks {
                             if (packageName == AppState.targetPackage) {
                                 val normalPath = "/data/app/${packageName}-base.apk"
                                 param.result = normalPath
-                                Logger.d("Spoofed sourceDir for: $packageName")
+                                Logger.d(Logger.HOOK, "Spoofed sourceDir for: $packageName")
                             }
                         } catch (e: Throwable) {
                             // Ignore
@@ -315,7 +315,7 @@ object ClonerBypassHooks {
                             if (packageName == AppState.targetPackage) {
                                 val normalPath = "/data/data/${packageName}"
                                 param.result = normalPath
-                                Logger.d("Spoofed dataDir for: $packageName")
+                                Logger.d(Logger.HOOK, "Spoofed dataDir for: $packageName")
                             }
                         } catch (e: Throwable) {
                             // Ignore
@@ -371,7 +371,7 @@ object ClonerBypassHooks {
                                     key.contains("SPACE")
                                 }
                                 keysToRemove.forEach { env.remove(it) }
-                                Logger.d("Filtered ${keysToRemove.size} cloner environment variables")
+                                Logger.d(Logger.HOOK, "Filtered ${keysToRemove.size} cloner environment variables")
                             }
                         }
                     }
@@ -403,7 +403,7 @@ object ClonerBypassHooks {
                         if (key.contains("cloner") || key.contains("clone") || key.contains("virtual") ||
                             key.contains("parallel") || key.contains("space") || key.contains("multiaccounts")) {
                             param.result = ""
-                            Logger.d("Blocked cloner property: $key")
+                            Logger.d(Logger.HOOK, "Blocked cloner property: $key")
                         }
 
                         if (key == "ro.build.fingerprint" || key == "ro.build.tags") {
@@ -447,14 +447,14 @@ object ClonerBypassHooks {
                     override fun afterHookedMethod(param: MethodHookParam) {
                         val path = param.args[0] as? String ?: return
                         if (path.contains("/proc/self/mountinfo") || path.contains("/proc/self/mounts")) {
-                            Logger.d("Spoofed mount namespace for: $path")
+                            Logger.d(Logger.HOOK, "Spoofed mount namespace for: $path")
                         }
                     }
                 }
             )
 
         } catch (e: Throwable) {
-            Logger.d("Mount namespace hook not available")
+            Logger.d(Logger.HOOK, "Mount namespace hook not available")
         }
 
         try {
@@ -568,7 +568,7 @@ object ClonerBypassHooks {
                                     }
                                     .joinToString(":")
                                 param.result = filtered
-                                Logger.d("Filtered cloner paths from system property: $key")
+                                Logger.d(Logger.HOOK, "Filtered cloner paths from system property: $key")
                             }
                         }
                     }
@@ -597,7 +597,7 @@ object ClonerBypassHooks {
                                 ""
                             )
                             param.args[0] = filteredCmd
-                            Logger.d("Filtered PM command: $cmd -> $filteredCmd")
+                            Logger.d(Logger.HOOK, "Filtered PM command: $cmd -> $filteredCmd")
                         }
                     }
                 }
@@ -637,7 +637,7 @@ object ClonerBypassHooks {
                                         if (currentSource != null && clonerPaths.any { currentSource.contains(it) }) {
                                             val spoofedPath = "/data/app/${packageName}-base.apk"
                                             infoField.set(appInfo, spoofedPath)
-                                            Logger.d("Spoofed ActivityThread sourceDir: $currentSource -> $spoofedPath")
+                                            Logger.d(Logger.HOOK, "Spoofed ActivityThread sourceDir: $currentSource -> $spoofedPath")
                                         }
                                     } catch (e: Throwable) {
                                         // Field may not exist
@@ -650,7 +650,7 @@ object ClonerBypassHooks {
                                         if (currentDataDir != null && clonerPaths.any { currentDataDir.contains(it) }) {
                                             val spoofedDataDir = "/data/data/${packageName}"
                                             dataDirField.set(appInfo, spoofedDataDir)
-                                            Logger.d("Spoofed ActivityThread dataDir: $currentDataDir -> $spoofedDataDir")
+                                            Logger.d(Logger.HOOK, "Spoofed ActivityThread dataDir: $currentDataDir -> $spoofedDataDir")
                                         }
                                     } catch (e: Throwable) {
                                         // Field may not exist
@@ -665,7 +665,7 @@ object ClonerBypassHooks {
             )
 
         } catch (e: Throwable) {
-            Logger.d("ActivityThread hook not available")
+            Logger.d(Logger.HOOK, "ActivityThread hook not available")
         }
     }
 

@@ -42,7 +42,7 @@ object RootBypassHooks {
             hookPackageManager(lpparam)
             hookBuildFields(lpparam)
             hookSystemProperties(lpparam)
-            Logger.d("Root bypass hooks installed")
+            Logger.d(Logger.HOOK, "Root bypass hooks installed")
         } catch (e: Throwable) {
             Logger.e("Root bypass hooks failed", e)
         }
@@ -62,7 +62,7 @@ object RootBypassHooks {
 
                         if (rootPaths.any { path.contains(it) }) {
                             param.result = false
-                            Logger.d("Blocked root file check: $path")
+                            Logger.d(Logger.HOOK, "Blocked root file check: $path")
                         }
                     }
                 }
@@ -109,7 +109,7 @@ object RootBypassHooks {
                             override fun beforeHookedMethod(param: MethodHookParam) {
                                 val cmd = getCommandFromArgs(param.args)
                                 if (cmd != null && isRootCommand(cmd)) {
-                                    Logger.d("Blocked root command: $cmd")
+                                    Logger.d(Logger.HOOK, "Blocked root command: $cmd")
                                     throw IOException("Command not found")
                                 }
                             }
@@ -137,7 +137,7 @@ object RootBypassHooks {
                                 val command = pb.javaClass.getMethod("command").invoke(pb) as? List<*>
                                 val cmdStr = command?.joinToString(" ") ?: ""
                                 if (isRootCommand(cmdStr)) {
-                                    Logger.d("Blocked ProcessBuilder root command: $cmdStr")
+                                    Logger.d(Logger.HOOK, "Blocked ProcessBuilder root command: $cmdStr")
                                     throw IOException("Command not found")
                                 }
                             } catch (e: Throwable) {
@@ -194,7 +194,7 @@ object RootBypassHooks {
                         val packageName = param.args[0] as? String
                         if (packageName != null && rootPackages.contains(packageName)) {
                             param.result = null
-                            Logger.d("Blocked package info request: $packageName")
+                            Logger.d(Logger.HOOK, "Blocked package info request: $packageName")
                         }
                     }
                 }
@@ -214,7 +214,7 @@ object RootBypassHooks {
                     !rootPackages.contains(pkgName)
                 }
                 param.result = filtered
-                Logger.d("Filtered root packages")
+                Logger.d(Logger.HOOK, "Filtered root packages")
             }
         } catch (e: Throwable) {
             Logger.e("Failed to filter packages", e)
@@ -233,7 +233,7 @@ object RootBypassHooks {
                 // Fields may not exist
             }
 
-            Logger.d("Build fields spoofed for root bypass")
+            Logger.d(Logger.HOOK, "Build fields spoofed for root bypass")
 
         } catch (e: Throwable) {
             Logger.e("Build fields hook failed", e)

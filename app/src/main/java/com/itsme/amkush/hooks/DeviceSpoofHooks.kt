@@ -16,7 +16,7 @@ object DeviceSpoofHooks {
         }
 
         if (!SharedPrefs.isSpoofActive()) {
-            Logger.d("Device spoofing not active, skipping")
+            Logger.d(Logger.HOOK, "Device spoofing not active, skipping")
             return
         }
 
@@ -25,7 +25,7 @@ object DeviceSpoofHooks {
             hookSystemProperties(lpparam)
             hookTelephonyManager(lpparam)
             hookSettingsSecure(lpparam)
-            Logger.d("Device spoof hooks installed for ${lpparam.packageName}")
+            Logger.d(Logger.HOOK, "Device spoof hooks installed for ${lpparam.packageName}")
         } catch (e: Throwable) {
             Logger.e("Device spoof hooks failed", e)
         }
@@ -37,7 +37,7 @@ object DeviceSpoofHooks {
         try {
             SharedPrefs.getSpoofModel()?.let {
                 XposedHelpers.setStaticObjectField(buildClass, "MODEL", it)
-                Logger.d("Build.MODEL spoofed to: $it")
+                Logger.d(Logger.HOOK, "Build.MODEL spoofed to: $it")
             }
         } catch (e: Throwable) {
             Logger.e("Failed to spoof Build.MODEL", e)
@@ -46,7 +46,7 @@ object DeviceSpoofHooks {
         try {
             SharedPrefs.getSpoofBrand()?.let {
                 XposedHelpers.setStaticObjectField(buildClass, "BRAND", it)
-                Logger.d("Build.BRAND spoofed to: $it")
+                Logger.d(Logger.HOOK, "Build.BRAND spoofed to: $it")
             }
         } catch (e: Throwable) {
             Logger.e("Failed to spoof Build.BRAND", e)
@@ -55,7 +55,7 @@ object DeviceSpoofHooks {
         try {
             SharedPrefs.getSpoofManufacturer()?.let {
                 XposedHelpers.setStaticObjectField(buildClass, "MANUFACTURER", it)
-                Logger.d("Build.MANUFACTURER spoofed to: $it")
+                Logger.d(Logger.HOOK, "Build.MANUFACTURER spoofed to: $it")
             }
         } catch (e: Throwable) {
             Logger.e("Failed to spoof Build.MANUFACTURER", e)
@@ -64,7 +64,7 @@ object DeviceSpoofHooks {
         try {
             SharedPrefs.getSpoofBuildId()?.let {
                 XposedHelpers.setStaticObjectField(buildClass, "ID", it)
-                Logger.d("Build.ID spoofed to: $it")
+                Logger.d(Logger.HOOK, "Build.ID spoofed to: $it")
             }
         } catch (e: Throwable) {
             Logger.e("Failed to spoof Build.ID", e)
@@ -74,7 +74,7 @@ object DeviceSpoofHooks {
             SharedPrefs.getSpoofAndroid()?.let {
                 val versionClass = XposedHelpers.findClass("android.os.Build\$VERSION", lpparam.classLoader)
                 XposedHelpers.setStaticObjectField(versionClass, "RELEASE", it)
-                Logger.d("Build.VERSION.RELEASE spoofed to: $it")
+                Logger.d(Logger.HOOK, "Build.VERSION.RELEASE spoofed to: $it")
             }
         } catch (e: Throwable) {
             Logger.e("Failed to spoof Build.VERSION.RELEASE", e)
@@ -100,7 +100,7 @@ object DeviceSpoofHooks {
                 }
                 val versionClass = XposedHelpers.findClass("android.os.Build\$VERSION", lpparam.classLoader)
                 XposedHelpers.setStaticIntField(versionClass, "SDK_INT", sdkInt)
-                Logger.d("Build.VERSION.SDK_INT spoofed to: $sdkInt")
+                Logger.d(Logger.HOOK, "Build.VERSION.SDK_INT spoofed to: $sdkInt")
             } catch (e: Throwable) {
                 Logger.e("Failed to spoof Build.VERSION.SDK_INT", e)
             }
@@ -110,7 +110,7 @@ object DeviceSpoofHooks {
             try {
                 val versionClass = XposedHelpers.findClass("android.os.Build\$VERSION", lpparam.classLoader)
                 XposedHelpers.setStaticObjectField(versionClass, "SECURITY_PATCH", it)
-                Logger.d("Build.VERSION.SECURITY_PATCH spoofed to: $it")
+                Logger.d(Logger.HOOK, "Build.VERSION.SECURITY_PATCH spoofed to: $it")
             } catch (e: Throwable) {
                 Logger.e("Failed to spoof Build.VERSION.SECURITY_PATCH", e)
             }
@@ -119,7 +119,7 @@ object DeviceSpoofHooks {
         SharedPrefs.getSpoofSerial()?.let {
             try {
                 XposedHelpers.setStaticObjectField(buildClass, "SERIAL", it)
-                Logger.d("Build.SERIAL spoofed to: $it")
+                Logger.d(Logger.HOOK, "Build.SERIAL spoofed to: $it")
             } catch (e: Throwable) {
                 Logger.e("Failed to spoof Build.SERIAL", e)
             }
@@ -133,7 +133,7 @@ object DeviceSpoofHooks {
                     override fun afterHookedMethod(param: MethodHookParam) {
                         SharedPrefs.getSpoofSerial()?.let {
                             param.result = it
-                            Logger.d("Build.getSerial spoofed to: $it")
+                            Logger.d(Logger.HOOK, "Build.getSerial spoofed to: $it")
                         }
                     }
                 }
@@ -161,7 +161,7 @@ object DeviceSpoofHooks {
                             "ro.product.model" -> {
                                 SharedPrefs.getSpoofModel()?.let {
                                     param.result = it
-                                    Logger.d("SystemProperties.get(ro.product.model) -> $it")
+                                    Logger.d(Logger.HOOK, "SystemProperties.get(ro.product.model) -> $it")
                                 }
                             }
                             "ro.product.brand" -> {
@@ -266,7 +266,7 @@ object DeviceSpoofHooks {
                     override fun afterHookedMethod(param: MethodHookParam) {
                         SharedPrefs.getSpoofDeviceId()?.let {
                             param.result = it
-                            Logger.d("TelephonyManager.getDeviceId spoofed to: $it")
+                            Logger.d(Logger.HOOK, "TelephonyManager.getDeviceId spoofed to: $it")
                         }
                     }
                 }
@@ -279,7 +279,7 @@ object DeviceSpoofHooks {
                     override fun afterHookedMethod(param: MethodHookParam) {
                         SharedPrefs.getSpoofDeviceId()?.let {
                             param.result = it
-                            Logger.d("TelephonyManager.getImei spoofed to: $it")
+                            Logger.d(Logger.HOOK, "TelephonyManager.getImei spoofed to: $it")
                         }
                     }
                 }
@@ -291,7 +291,7 @@ object DeviceSpoofHooks {
                 object : XC_MethodHook() {
                     override fun afterHookedMethod(param: MethodHookParam) {
                         param.result = "00"
-                        Logger.d("TelephonyManager.getDeviceSoftwareVersion spoofed")
+                        Logger.d(Logger.HOOK, "TelephonyManager.getDeviceSoftwareVersion spoofed")
                     }
                 }
             )
@@ -303,7 +303,7 @@ object DeviceSpoofHooks {
                     override fun afterHookedMethod(param: MethodHookParam) {
                         SharedPrefs.getSpoofSerial()?.let {
                             param.result = it
-                            Logger.d("TelephonyManager.getSimSerialNumber spoofed to: $it")
+                            Logger.d(Logger.HOOK, "TelephonyManager.getSimSerialNumber spoofed to: $it")
                         }
                     }
                 }
@@ -316,7 +316,7 @@ object DeviceSpoofHooks {
                     override fun afterHookedMethod(param: MethodHookParam) {
                         SharedPrefs.getSpoofDeviceId()?.let {
                             param.result = it
-                            Logger.d("TelephonyManager.getSubscriberId spoofed to: $it")
+                            Logger.d(Logger.HOOK, "TelephonyManager.getSubscriberId spoofed to: $it")
                         }
                     }
                 }
@@ -344,7 +344,7 @@ object DeviceSpoofHooks {
                         if (key == "android_id") {
                             SharedPrefs.getSpoofDeviceId()?.let {
                                 param.result = it
-                                Logger.d("Settings.Secure.getString(android_id) spoofed to: $it")
+                                Logger.d(Logger.HOOK, "Settings.Secure.getString(android_id) spoofed to: $it")
                             }
                         }
                     }

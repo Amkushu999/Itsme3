@@ -11,6 +11,7 @@
 extern "C" {
 #include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h>
+#include <libavcodec/jni.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/opt.h>
 #include <libavutil/frame.h>
@@ -18,26 +19,41 @@ extern "C" {
 #include <libswscale/swscale.h>
 }
 
-#define LOG_TAG "FFmpegDecoder"
-#define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  LOG_TAG, __VA_ARGS__)
-#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
-#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
+// ── Tag definitions ───────────────────────────────────────────────────────────
+// LOG_TAG   = "FFmpegDecoder" → filter: logcat -s FFmpegDecoder:D
+// DECODER_TAG = "DECODER"    → unified category: logcat -s DECODER:D
+#define LOG_TAG     "FFmpegDecoder"
+#define DECODER_TAG "DECODER"
+#define LOGI(...)  __android_log_print(ANDROID_LOG_INFO,  LOG_TAG,     __VA_ARGS__)
+#define LOGE(...)  __android_log_print(ANDROID_LOG_ERROR, LOG_TAG,     __VA_ARGS__)
+#define LOGD(...)  __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG,     __VA_ARGS__)
+// LDEC: same message to the unified DECODER category tag for grep convenience
+#define LDECI(...) __android_log_print(ANDROID_LOG_INFO,  DECODER_TAG, __VA_ARGS__)
+#define LDECE(...) __android_log_print(ANDROID_LOG_ERROR, DECODER_TAG, __VA_ARGS__)
+#define LDECD(...) __android_log_print(ANDROID_LOG_DEBUG, DECODER_TAG, __VA_ARGS__)
 #define FG_TAG  "FACEGATE"
 #define LOGFG(...) __android_log_print(ANDROID_LOG_DEBUG, FG_TAG, __VA_ARGS__)
 
 // ── Custom FFmpeg log callback (prevents exit() on fatal errors) ─────────────
 static void ffmpeg_log_callback(void* ptr, int level, const char* fmt, va_list vl) {
     if (level > AV_LOG_WARNING) return;  // Only log warnings and errors
-    
+
     char buf[1024];
     vsnprintf(buf, sizeof(buf), fmt, vl);
-    
+
+    // BUG FIX: Filter benign MJPEG/JPEG EXIF APP-marker warning that floods
+    // logcat whenever FFmpeg opens a JPEG file with embedded EXIF data.
+    // The decoder still works correctly — this is purely a cosmetic log spam.
+    if (strstr(buf, "unable to decode APP fields") != nullptr) return;
+
     switch (level) {
         case AV_LOG_ERROR:
             LOGE("FFmpeg: %s", buf);
+            LDECE("[ffmpeg] %s", buf);
             break;
         case AV_LOG_WARNING:
             LOGI("FFmpeg: %s", buf);
+            LDECI("[ffmpeg] %s", buf);
             break;
         default:
             LOGD("FFmpeg: %s", buf);
@@ -117,7 +133,15 @@ static void buildDemuxerOpts(AVDictionary** opts, const std::string& url) {
         av_dict_set(opts, "reconnect_streamed", "1",       0);
         av_dict_set(opts, "reconnect_delay_max","5",       0);
     } else if (scheme == "rtmp" || scheme == "rtmps") {
-        av_dict_set(opts, "timeout", "5000000", 0);
+        // BUG FIX: Do NOT set the generic "timeout" option for RTMP connections.
+        // librtmp internally maps it to "listen_timeout" (server-listen mode),
+        // producing garbage values in the TCP URL and triggering EADDRNOTAVAIL
+        // because FFmpeg thinks it should bind as a server rather than connect
+        // as a client.  Use rtmp-specific options instead:
+        //   rtmp_live -1 = auto-detect live/recorded (safest for arbitrary streams)
+        //   tcp_nodelay  = reduces latency on the underlying TCP socket
+        av_dict_set(opts, "rtmp_live",   "-1", 0);  // -1 = any, 1 = live
+        av_dict_set(opts, "tcp_nodelay", "1",  0);
     } else if (scheme == "srt") {
         av_dict_set(opts, "latency", "200000", 0);
     }
@@ -129,7 +153,8 @@ static void buildDemuxerOpts(AVDictionary** opts, const std::string& url) {
 // ── Try to find hardware decoder, fallback to software ───────────────────────
 static const AVCodec* findBestDecoder(enum AVCodecID codec_id, bool& hwAccel) {
     hwAccel = false;
-    
+    LDECD("[findBestDecoder] codec_id=%d", static_cast<int>(codec_id));
+
     // Try hardware decoder first (MediaCodec)
     const char* hwDecoderName = nullptr;
     switch (codec_id) {
@@ -139,30 +164,38 @@ static const AVCodec* findBestDecoder(enum AVCodecID codec_id, bool& hwAccel) {
         case AV_CODEC_ID_VP9:   hwDecoderName = "vp9_mediacodec";   break;
         default: break;
     }
-    
+
     if (hwDecoderName) {
         const AVCodec* hwCodec = avcodec_find_decoder_by_name(hwDecoderName);
         if (hwCodec) {
             LOGI("Using hardware decoder: %s", hwDecoderName);
+            LDECI("[findBestDecoder] hw=%s  codec_id=%d", hwDecoderName, static_cast<int>(codec_id));
             hwAccel = true;
             return hwCodec;
         }
         LOGI("Hardware decoder %s not available, falling back to software", hwDecoderName);
+        LDECI("[findBestDecoder] hw=%s unavailable — sw fallback", hwDecoderName);
     }
-    
+
     // Fallback to software decoder
     const AVCodec* swCodec = avcodec_find_decoder(codec_id);
     if (swCodec) {
         LOGI("Using software decoder: %s", swCodec->name);
+        LDECI("[findBestDecoder] sw=%s  codec_id=%d", swCodec->name, static_cast<int>(codec_id));
+    } else {
+        LOGE("No decoder found for codec_id=%d", static_cast<int>(codec_id));
+        LDECE("[findBestDecoder] no decoder for codec_id=%d", static_cast<int>(codec_id));
     }
     return swCodec;
 }
 
 // ── Stream open / close ───────────────────────────────────────────────────────
 static bool openStream(DecoderCtx* ctx) {
+    LDECI("[openStream] url=%s", ctx->url.c_str());
     ctx->fmtCtx = avformat_alloc_context();
     if (!ctx->fmtCtx) {
         LOGE("avformat_alloc_context failed");
+        LDECE("[openStream] avformat_alloc_context failed");
         return false;
     }
 
@@ -388,8 +421,10 @@ static void decodeLoop(DecoderCtx* ctx) {
     JNIEnv* env       = attachCurrentThread(didAttach);
     if (!env) {
         LOGE("decodeLoop: failed to attach to JVM");
+        LDECE("[decodeLoop] JVM attach failed — decode thread cannot start");
         return;
     }
+    LDECI("[decodeLoop] thread started  url=%s", ctx->url.c_str());
 
     while (ctx->running.load()) {
         if (ctx->hotSwapping.load()) {
@@ -400,6 +435,7 @@ static void decodeLoop(DecoderCtx* ctx) {
                 ctx->hotSwapping.store(false);
             }
             LOGI("hot-swap → %s", newUrl.c_str());
+            LDECI("[decodeLoop] hotSwap  old=%s  new=%s", ctx->url.c_str(), newUrl.c_str());
             closeStream(ctx);
             ctx->url = newUrl;
 
@@ -416,23 +452,43 @@ static void decodeLoop(DecoderCtx* ctx) {
             env->CallVoidMethod(ctx->callback, g_onEof);
             if (env->ExceptionCheck()) env->ExceptionClear();
 
+            // BUG FIX: Local file paths (/data/... or file://...) are NEVER live streams.
+            // Previously, MJPEG still-image files had AV_NOPTS_VALUE duration and were
+            // wrongly classified as live, causing an infinite 2-second reconnect loop:
+            //   "unable to decode APP fields" → EOF → "live stream EOF — reconnecting in 2s" → repeat
+            // Rule: if the URL starts with '/' (absolute path) or "file://", it is a file.
+            const bool isLocalFile =
+                !ctx->url.empty() && (
+                    ctx->url[0] == '/' ||
+                    (ctx->url.size() >= 7 && ctx->url.substr(0, 7) == "file://")
+                );
+
             const bool isLive =
-                (ctx->fmtCtx->duration == AV_NOPTS_VALUE) ||
-                (ctx->url.substr(0, 4) == "rtsp") ||
-                (ctx->url.substr(0, 4) == "rtmp") ||
-                (ctx->url.substr(0, 3) == "udp") ||
-                (ctx->url.substr(0, 3) == "rtp") ||
-                (ctx->url.substr(0, 3) == "srt");
+                !isLocalFile && (
+                    (ctx->fmtCtx->duration == AV_NOPTS_VALUE) ||
+                    (ctx->url.size() >= 4 && ctx->url.substr(0, 4) == "rtsp") ||
+                    (ctx->url.size() >= 4 && ctx->url.substr(0, 4) == "rtmp") ||
+                    (ctx->url.size() >= 3 && ctx->url.substr(0, 3) == "udp") ||
+                    (ctx->url.size() >= 3 && ctx->url.substr(0, 3) == "rtp") ||
+                    (ctx->url.size() >= 3 && ctx->url.substr(0, 3) == "srt")
+                );
+
+            LDECD("[decodeLoop] EOF  isLocalFile=%d  isLive=%d  url=%s  duration=%lld",
+                  isLocalFile, isLive, ctx->url.c_str(),
+                  static_cast<long long>(ctx->fmtCtx ? ctx->fmtCtx->duration : -1));
 
             if (!isLive) {
+                LDECD("[decodeLoop] file EOF — seeking to start for loop playback");
                 avformat_seek_file(ctx->fmtCtx, -1, INT64_MIN, 0, INT64_MAX, 0);
                 avcodec_flush_buffers(ctx->codecCtx);
             } else {
                 LOGI("live stream EOF — reconnecting in 2 s");
+                LDECI("[decodeLoop] live EOF — will reconnect url=%s", ctx->url.c_str());
                 std::this_thread::sleep_for(std::chrono::seconds(2));
                 closeStream(ctx);
                 while (ctx->running.load() && !openStream(ctx)) {
                     LOGE("reconnect failed — retry in 3 s");
+                    LDECE("[decodeLoop] reconnect failed url=%s", ctx->url.c_str());
                     std::this_thread::sleep_for(std::chrono::seconds(3));
                 }
                 if (!ctx->running.load()) break;
@@ -509,10 +565,23 @@ static void decodeLoop(DecoderCtx* ctx) {
 // ── JNI exports ──────────────────────────────────────────────────────────────
 extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void*) {
     g_jvm = vm;
-    
+
+    // BUG FIX: Register the JVM with FFmpeg's MediaCodec integration layer.
+    // Without this call, any hardware decoder (h264_mediacodec, hevc_mediacodec, …)
+    // logs "No Java virtual machine has been registered" and cannot allocate
+    // MediaCodec buffers through the JNI surface, leading to decoder failures mid-stream.
+    // av_jni_set_java_vm() must be called from JNI_OnLoad — before any avformat/avcodec use.
+    if (av_jni_set_java_vm(vm, nullptr) < 0) {
+        LOGE("JNI_OnLoad: av_jni_set_java_vm failed — hardware decoders will not work");
+        LDECE("[JNI_OnLoad] av_jni_set_java_vm failed");
+    } else {
+        LOGI("JNI_OnLoad: JVM registered with FFmpeg MediaCodec layer");
+        LDECI("[JNI_OnLoad] JVM registered — hardware decoders enabled");
+    }
+
     // Register custom log callback to prevent FFmpeg from calling exit()
     av_log_set_callback(ffmpeg_log_callback);
-    
+
     return JNI_VERSION_1_6;
 }
 

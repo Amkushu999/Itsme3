@@ -36,7 +36,7 @@ object IntentCaptureHooks {
         try {
             hookActivityOnActivityResult(lpparam)
             hookActivityResultLauncher(lpparam)
-            Logger.d("Intent capture hooks installed for ${lpparam.packageName}")
+            Logger.d(Logger.HOOK, "Intent capture hooks installed for ${lpparam.packageName}")
         } catch (e: Throwable) {
             Logger.e("Intent capture hooks failed", e)
         }
@@ -78,7 +78,7 @@ object IntentCaptureHooks {
                 }
             )
 
-            Logger.d("Activity.onActivityResult hook installed")
+            Logger.d(Logger.HOOK, "Activity.onActivityResult hook installed")
 
         } catch (e: Throwable) {
             Logger.e("Activity.onActivityResult hook failed", e)
@@ -98,7 +98,7 @@ object IntentCaptureHooks {
                 Any::class.java,
                 object : XC_MethodHook() {
                     override fun afterHookedMethod(param: MethodHookParam) {
-                        Logger.d("ActivityResultLauncher.launch called")
+                        Logger.d(Logger.HOOK, "ActivityResultLauncher.launch called")
                     }
                 }
             )
@@ -124,10 +124,10 @@ object IntentCaptureHooks {
                                     if (resultCode == RESULT_OK && data != null) {
                                         if (isImageCaptureResult(data)) {
                                             replaceImageResult(data)
-                                            Logger.d("Replaced image in ActivityResultCallback")
+                                            Logger.d(Logger.HOOK, "Replaced image in ActivityResultCallback")
                                         } else if (isVideoCaptureResult(data)) {
                                             replaceVideoResult(data)
-                                            Logger.d("Replaced video in ActivityResultCallback")
+                                            Logger.d(Logger.HOOK, "Replaced video in ActivityResultCallback")
                                         }
                                     }
                                 } catch (e: Throwable) {
@@ -137,13 +137,13 @@ object IntentCaptureHooks {
                         }
                     }
                 )
-                Logger.d("ActivityResultCallback hook installed")
+                Logger.d(Logger.HOOK, "ActivityResultCallback hook installed")
             } catch (e: Throwable) {
-                Logger.d("ActivityResultCallback hook not available")
+                Logger.d(Logger.HOOK, "ActivityResultCallback hook not available")
             }
 
         } catch (e: Throwable) {
-            Logger.d("ActivityResultLauncher hook not available")
+            Logger.d(Logger.HOOK, "ActivityResultLauncher hook not available")
         }
     }
 
@@ -152,13 +152,13 @@ object IntentCaptureHooks {
             // Check if user has uploaded media
             val mediaUri = SharedPrefs.getLastUsedUrl()
             if (mediaUri.isNullOrEmpty()) {
-                Logger.d("No media uploaded, skipping image replacement")
+                Logger.d(Logger.HOOK, "No media uploaded, skipping image replacement")
                 return
             }
 
             val context = AppState.context
             if (context == null) {
-                Logger.e("Context not available for image replacement")
+                Logger.e(Logger.HOOK, "Context not available for image replacement")
                 return
             }
 
@@ -173,7 +173,7 @@ object IntentCaptureHooks {
                 // User uploaded a video - extract first frame
                 replaceImageWithVideoFrame(data, context, uri)
             } else {
-                Logger.d("Uploaded media is not image or video: $mimeType")
+                Logger.d(Logger.HOOK, "Uploaded media is not image or video: $mimeType")
             }
 
         } catch (e: Throwable) {
@@ -188,7 +188,7 @@ object IntentCaptureHooks {
             inputStream?.close()
 
             if (bitmap == null) {
-                Logger.e("Failed to decode uploaded image")
+                Logger.e(Logger.HOOK, "Failed to decode uploaded image")
                 return
             }
 
@@ -197,7 +197,7 @@ object IntentCaptureHooks {
                 // Create thumbnail-sized bitmap
                 val thumbnail = Bitmap.createScaledBitmap(bitmap, 800, 600, true)
                 data.putExtra("data", thumbnail)
-                Logger.d("Replaced image thumbnail with uploaded image")
+                Logger.d(Logger.HOOK, "Replaced image thumbnail with uploaded image")
                 return
             }
 
@@ -206,9 +206,9 @@ object IntentCaptureHooks {
                 val outputUri = data.getParcelableExtra<Uri>(MediaStore.EXTRA_OUTPUT)
                 if (outputUri != null) {
                     val outputStream = context.contentResolver.openOutputStream(outputUri)
-                        ?: run { Logger.e("openOutputStream returned null for $outputUri"); return }
+                        ?: run { Logger.e(Logger.HOOK, "openOutputStream returned null for $outputUri"); return }
                     outputStream.use { bitmap.compress(Bitmap.CompressFormat.JPEG, 90, it) }
-                    Logger.d("Replaced full image with uploaded image at: $outputUri")
+                    Logger.d(Logger.HOOK, "Replaced full image with uploaded image at: $outputUri")
                 }
                 return
             }
@@ -217,9 +217,9 @@ object IntentCaptureHooks {
             val imageUri = data.data
             if (imageUri != null) {
                 val outputStream = context.contentResolver.openOutputStream(imageUri)
-                    ?: run { Logger.e("openOutputStream returned null for $imageUri"); return }
+                    ?: run { Logger.e(Logger.HOOK, "openOutputStream returned null for $imageUri"); return }
                 outputStream.use { bitmap.compress(Bitmap.CompressFormat.JPEG, 90, it) }
-                Logger.d("Replaced image data URI with uploaded image at: $imageUri")
+                Logger.d(Logger.HOOK, "Replaced image data URI with uploaded image at: $imageUri")
             }
 
         } catch (e: Exception) {
@@ -232,7 +232,7 @@ object IntentCaptureHooks {
             // Extract first frame from video
             val bitmap = extractFirstFrameFromVideo(context, uri)
             if (bitmap == null) {
-                Logger.e("Failed to extract first frame from video")
+                Logger.e(Logger.HOOK, "Failed to extract first frame from video")
                 return
             }
 
@@ -240,7 +240,7 @@ object IntentCaptureHooks {
             if (data.hasExtra("data")) {
                 val thumbnail = Bitmap.createScaledBitmap(bitmap, 800, 600, true)
                 data.putExtra("data", thumbnail)
-                Logger.d("Replaced image thumbnail with video frame")
+                Logger.d(Logger.HOOK, "Replaced image thumbnail with video frame")
                 return
             }
 
@@ -249,9 +249,9 @@ object IntentCaptureHooks {
                 val outputUri = data.getParcelableExtra<Uri>(MediaStore.EXTRA_OUTPUT)
                 if (outputUri != null) {
                     val outputStream = context.contentResolver.openOutputStream(outputUri)
-                        ?: run { Logger.e("openOutputStream returned null for $outputUri"); return }
+                        ?: run { Logger.e(Logger.HOOK, "openOutputStream returned null for $outputUri"); return }
                     outputStream.use { bitmap.compress(Bitmap.CompressFormat.JPEG, 90, it) }
-                    Logger.d("Replaced full image with video frame at: $outputUri")
+                    Logger.d(Logger.HOOK, "Replaced full image with video frame at: $outputUri")
                 }
                 return
             }
@@ -260,9 +260,9 @@ object IntentCaptureHooks {
             val imageUri = data.data
             if (imageUri != null) {
                 val outputStream = context.contentResolver.openOutputStream(imageUri)
-                    ?: run { Logger.e("openOutputStream returned null for $imageUri"); return }
+                    ?: run { Logger.e(Logger.HOOK, "openOutputStream returned null for $imageUri"); return }
                 outputStream.use { bitmap.compress(Bitmap.CompressFormat.JPEG, 90, it) }
-                Logger.d("Replaced image data URI with video frame at: $imageUri")
+                Logger.d(Logger.HOOK, "Replaced image data URI with video frame at: $imageUri")
             }
 
         } catch (e: Exception) {
@@ -290,13 +290,13 @@ object IntentCaptureHooks {
             // Check if user has uploaded media
             val mediaUri = SharedPrefs.getLastUsedUrl()
             if (mediaUri.isNullOrEmpty()) {
-                Logger.d("No media uploaded, skipping video replacement")
+                Logger.d(Logger.HOOK, "No media uploaded, skipping video replacement")
                 return
             }
 
             val context = AppState.context
             if (context == null) {
-                Logger.e("Context not available for video replacement")
+                Logger.e(Logger.HOOK, "Context not available for video replacement")
                 return
             }
 
@@ -306,7 +306,7 @@ object IntentCaptureHooks {
             val mimeType = context.contentResolver.getType(uri)
 
             if (mimeType?.startsWith("video/") != true) {
-                Logger.d("Uploaded media is not a video, skipping video replacement")
+                Logger.d(Logger.HOOK, "Uploaded media is not a video, skipping video replacement")
                 return
             }
 
@@ -315,7 +315,7 @@ object IntentCaptureHooks {
                 val outputUri = data.getParcelableExtra<Uri>(MediaStore.EXTRA_OUTPUT)
                 if (outputUri != null) {
                     copyVideoToUri(context, uri, outputUri)
-                    Logger.d("Replaced video at: $outputUri")
+                    Logger.d(Logger.HOOK, "Replaced video at: $outputUri")
                 }
                 return
             }
@@ -324,7 +324,7 @@ object IntentCaptureHooks {
             val videoUri = data.data
             if (videoUri != null) {
                 copyVideoToUri(context, uri, videoUri)
-                Logger.d("Replaced video data URI at: $videoUri")
+                Logger.d(Logger.HOOK, "Replaced video data URI at: $videoUri")
             }
 
         } catch (e: Throwable) {
@@ -338,7 +338,7 @@ object IntentCaptureHooks {
             val outputStream = context.contentResolver.openOutputStream(targetUri)
 
             if (inputStream == null || outputStream == null) {
-                Logger.e("Failed to open streams for video copy")
+                Logger.e(Logger.HOOK, "Failed to open streams for video copy")
                 inputStream?.close()
                 outputStream?.close()
                 return
@@ -352,7 +352,7 @@ object IntentCaptureHooks {
 
             inputStream.close()
             outputStream.close()
-            Logger.d("Video copied successfully")
+            Logger.d(Logger.HOOK, "Video copied successfully")
 
         } catch (e: Exception) {
             Logger.e("Failed to copy video", e)

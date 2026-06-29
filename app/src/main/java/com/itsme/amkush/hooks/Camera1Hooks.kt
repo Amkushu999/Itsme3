@@ -81,6 +81,7 @@ object Camera1Hooks {
     // ── Install ───────────────────────────────────────────────────────────────
 
     fun hookAll(lpparam: XC_LoadPackage.LoadPackageParam) {
+        Logger.d(Logger.HOOK, "Camera1Hooks hookAll: pkg=${lpparam.packageName}")
         try {
             val camClass = XposedHelpers.findClass("android.hardware.Camera", lpparam.classLoader)
             hookOpen(camClass, lpparam.classLoader)

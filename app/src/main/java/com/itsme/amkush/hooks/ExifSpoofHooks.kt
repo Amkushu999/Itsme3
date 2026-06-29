@@ -53,16 +53,16 @@ object ExifSpoofHooks {
             hookGetThumbnail(lpparam)
             hookGetLatLong(lpparam)
             hookSetLatLong(lpparam)
-            Logger.d("EXIF spoof hooks installed for ${lpparam.packageName}")
+            Logger.d(Logger.HOOK, "EXIF spoof hooks installed for ${lpparam.packageName}")
         } catch (e: Throwable) {
-            Logger.e("EXIF spoof hooks failed", e)
+            Logger.e(Logger.HOOK, "EXIF spoof hooks failed", e)
         }
     }
 
     private fun initDeviceInfo() {
         cachedDeviceMake = getDeviceMakeForExif()
         cachedDeviceModel = getDeviceModelForExif()
-        Logger.d("Device info for EXIF: Make=$cachedDeviceMake, Model=$cachedDeviceModel")
+        Logger.d(Logger.HOOK, "Device info for EXIF: Make=$cachedDeviceMake, Model=$cachedDeviceModel")
     }
 
     private fun getDeviceMakeForExif(): String {
@@ -140,7 +140,7 @@ object ExifSpoofHooks {
                         override fun afterHookedMethod(param: MethodHookParam) {
                             refreshDeviceGps()
                             initDeviceInfo()
-                            Logger.d("ExifInterface initialized, GPS and device info refreshed")
+                            Logger.d(Logger.HOOK, "ExifInterface initialized, GPS and device info refreshed")
                         }
                     }
                 )
@@ -149,7 +149,7 @@ object ExifSpoofHooks {
             }
 
         } catch (e: Throwable) {
-            Logger.e("ExifInterface hook failed", e)
+            Logger.e(Logger.HOOK, "ExifInterface hook failed", e)
         }
     }
 
@@ -172,7 +172,7 @@ object ExifSpoofHooks {
                         val spoofedValue = getSpoofedExifValueString(tag, originalValue)
                         if (spoofedValue != null && spoofedValue != originalValue) {
                             param.result = spoofedValue
-                            Logger.d("Spoofed EXIF tag: $tag = $spoofedValue (original: $originalValue)")
+                            Logger.d(Logger.HOOK, "Spoofed EXIF tag: $tag = $spoofedValue (original: $originalValue)")
                         }
                     }
                 }
@@ -200,7 +200,7 @@ object ExifSpoofHooks {
             }
 
         } catch (e: Throwable) {
-            Logger.e("ExifInterface.getAttribute hook failed", e)
+            Logger.e(Logger.HOOK, "ExifInterface.getAttribute hook failed", e)
         }
     }
 
@@ -225,14 +225,14 @@ object ExifSpoofHooks {
                         val spoofedValue = getSpoofedExifValueInt(tag, originalValue)
                         if (spoofedValue != originalValue) {
                             param.result = spoofedValue
-                            Logger.d("Spoofed EXIF int tag: $tag = $spoofedValue (original: $originalValue)")
+                            Logger.d(Logger.HOOK, "Spoofed EXIF int tag: $tag = $spoofedValue (original: $originalValue)")
                         }
                     }
                 }
             )
 
         } catch (e: Throwable) {
-            Logger.e("ExifInterface.getAttributeInt hook failed", e)
+            Logger.e(Logger.HOOK, "ExifInterface.getAttributeInt hook failed", e)
         }
     }
 
@@ -257,14 +257,14 @@ object ExifSpoofHooks {
                         val spoofedValue = getSpoofedExifValueDouble(tag, originalValue)
                         if (spoofedValue != originalValue) {
                             param.result = spoofedValue
-                            Logger.d("Spoofed EXIF double tag: $tag = $spoofedValue (original: $originalValue)")
+                            Logger.d(Logger.HOOK, "Spoofed EXIF double tag: $tag = $spoofedValue (original: $originalValue)")
                         }
                     }
                 }
             )
 
         } catch (e: Throwable) {
-            Logger.e("ExifInterface.getAttributeDouble hook failed", e)
+            Logger.e(Logger.HOOK, "ExifInterface.getAttributeDouble hook failed", e)
         }
     }
 
@@ -334,7 +334,7 @@ object ExifSpoofHooks {
             }
 
         } catch (e: Throwable) {
-            Logger.e("ExifInterface.setAttribute hook failed", e)
+            Logger.e(Logger.HOOK, "ExifInterface.setAttribute hook failed", e)
         }
     }
 
@@ -350,13 +350,13 @@ object ExifSpoofHooks {
                 "saveAttributes",
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
-                        Logger.d("EXIF attributes being saved - preserving spoofed values")
+                        Logger.d(Logger.HOOK, "EXIF attributes being saved - preserving spoofed values")
                     }
                 }
             )
 
         } catch (e: Throwable) {
-            Logger.e("ExifInterface.saveAttributes hook failed", e)
+            Logger.e(Logger.HOOK, "ExifInterface.saveAttributes hook failed", e)
         }
     }
 
@@ -373,13 +373,13 @@ object ExifSpoofHooks {
                 object : XC_MethodHook() {
                     override fun afterHookedMethod(param: MethodHookParam) {
                         param.result = true
-                        Logger.d("ExifInterface.hasThumbnail spoofed to true")
+                        Logger.d(Logger.HOOK, "ExifInterface.hasThumbnail spoofed to true")
                     }
                 }
             )
 
         } catch (e: Throwable) {
-            Logger.e("ExifInterface.hasThumbnail hook failed", e)
+            Logger.e(Logger.HOOK, "ExifInterface.hasThumbnail hook failed", e)
         }
     }
 
@@ -395,7 +395,7 @@ object ExifSpoofHooks {
                 "getThumbnail",
                 object : XC_MethodHook() {
                     override fun afterHookedMethod(param: MethodHookParam) {
-                        Logger.d("ExifInterface.getThumbnail called")
+                        Logger.d(Logger.HOOK, "ExifInterface.getThumbnail called")
                     }
                 }
             )
@@ -405,13 +405,13 @@ object ExifSpoofHooks {
                 "getThumbnailBitmap",
                 object : XC_MethodHook() {
                     override fun afterHookedMethod(param: MethodHookParam) {
-                        Logger.d("ExifInterface.getThumbnailBitmap called")
+                        Logger.d(Logger.HOOK, "ExifInterface.getThumbnailBitmap called")
                     }
                 }
             )
 
         } catch (e: Throwable) {
-            Logger.e("ExifInterface.getThumbnail hook failed", e)
+            Logger.e(Logger.HOOK, "ExifInterface.getThumbnail hook failed", e)
         }
     }
 
@@ -442,7 +442,7 @@ object ExifSpoofHooks {
             )
 
         } catch (e: Throwable) {
-            Logger.e("ExifInterface.getLatLong hook failed", e)
+            Logger.e(Logger.HOOK, "ExifInterface.getLatLong hook failed", e)
         }
     }
 
@@ -471,7 +471,7 @@ object ExifSpoofHooks {
             )
 
         } catch (e: Throwable) {
-            Logger.e("ExifInterface.setLatLong hook failed", e)
+            Logger.e(Logger.HOOK, "ExifInterface.setLatLong hook failed", e)
         }
     }
 

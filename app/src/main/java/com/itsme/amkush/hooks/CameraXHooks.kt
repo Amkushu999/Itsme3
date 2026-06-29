@@ -32,7 +32,7 @@ object CameraXHooks {
             hookImageAnalysisSetAnalyzer(lpparam)
             hookImageAnalysisBuilder(lpparam)
             hookCameraProviderBind(lpparam)
-            Logger.d("$TAG hooks installed")
+            Logger.d(Logger.HOOK, "$TAG hooks installed")
         } catch (e: Throwable) {
             Logger.e("$TAG hookAll failed", e)
         }
@@ -86,7 +86,7 @@ object CameraXHooks {
                             }
                         }
                         param.args[1] = proxy
-                        Logger.d("$TAG ImageAnalysis.setAnalyzer wrapped")
+                        Logger.d(Logger.HOOK, "$TAG ImageAnalysis.setAnalyzer wrapped")
                     }
                 }
             )
@@ -109,12 +109,12 @@ object CameraXHooks {
                     override fun beforeHookedMethod(param: MethodHookParam) {
                         Log.d("FACEGATE", "CameraX: ImageAnalysis.Builder resolution intercepted")
                         val sz = param.args[0] as? android.util.Size ?: return
-                        Logger.d("$TAG CameraX target resolution: ${sz.width}x${sz.height}")
+                        Logger.d(Logger.HOOK, "$TAG CameraX target resolution: ${sz.width}x${sz.height}")
                     }
                 }
             )
         } catch (e: Throwable) {
-            Logger.d("$TAG ImageAnalysis.Builder hook skipped: ${e.message}")
+            Logger.d(Logger.HOOK, "$TAG ImageAnalysis.Builder hook skipped: ${e.message}")
         }
     }
 
@@ -145,12 +145,12 @@ object CameraXHooks {
                         // Camera2Hooks handles the actual blocking.
                         // Log here for debugging convenience.
                         if (!AppState.isHookingActive) return
-                        Logger.d("$TAG CameraX bindToLifecycle intercepted — Camera2 block handles physical camera")
+                        Logger.d(Logger.HOOK, "$TAG CameraX bindToLifecycle intercepted — Camera2 block handles physical camera")
                     }
                 }
             )
         } catch (e: Throwable) {
-            Logger.d("$TAG bindToLifecycle hook skipped: ${e.message}")
+            Logger.d(Logger.HOOK, "$TAG bindToLifecycle hook skipped: ${e.message}")
         }
     }
 }

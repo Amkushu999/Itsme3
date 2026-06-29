@@ -15,7 +15,7 @@ object SELinuxBypassHooks {
 
         try {
             hookSELinux(lpparam)
-            Logger.d("SELinux bypass hooks installed")
+            Logger.d(Logger.HOOK, "SELinux bypass hooks installed")
         } catch (e: Throwable) {
             Logger.e("SELinux bypass hooks failed", e)
         }
@@ -36,7 +36,7 @@ object SELinuxBypassHooks {
                     object : XC_MethodHook() {
                         override fun afterHookedMethod(param: MethodHookParam) {
                             param.result = "u:r:untrusted_app:s0"
-                            Logger.d("SELinux.getContext spoofed")
+                            Logger.d(Logger.HOOK, "SELinux.getContext spoofed")
                         }
                     }
                 )
@@ -48,7 +48,7 @@ object SELinuxBypassHooks {
                     object : XC_MethodHook() {
                         override fun afterHookedMethod(param: MethodHookParam) {
                             param.result = "u:object_r:untrusted_app_file:s0"
-                            Logger.d("SELinux.getFileContext spoofed")
+                            Logger.d(Logger.HOOK, "SELinux.getFileContext spoofed")
                         }
                     }
                 )
@@ -59,7 +59,7 @@ object SELinuxBypassHooks {
                     object : XC_MethodHook() {
                         override fun afterHookedMethod(param: MethodHookParam) {
                             param.result = true
-                            Logger.d("SELinux.isSELinuxEnabled spoofed")
+                            Logger.d(Logger.HOOK, "SELinux.isSELinuxEnabled spoofed")
                         }
                     }
                 )
@@ -70,13 +70,13 @@ object SELinuxBypassHooks {
                     object : XC_MethodHook() {
                         override fun afterHookedMethod(param: MethodHookParam) {
                             param.result = true
-                            Logger.d("SELinux.isSELinuxEnforced spoofed")
+                            Logger.d(Logger.HOOK, "SELinux.isSELinuxEnforced spoofed")
                         }
                     }
                 )
 
             } catch (e: Throwable) {
-                Logger.d("SELinux class not found")
+                Logger.d(Logger.HOOK, "SELinux class not found")
             }
 
             // Hook SystemProperties for SELinux

@@ -63,16 +63,21 @@ object SurfaceRouter : FFmpegDecoder.FrameCallback {
         // MUST copy from native-owned memory before this call returns.
         // AVFrame buffers are reused on the next decode cycle.
         val ySize  = width * height
-        // FIX: Correct UV size for odd dimensions (was ySize / 4 which truncates)
         val uvW    = (width + 1) / 2
         val uvH    = (height + 1) / 2
         val uvSize = uvW * uvH
+
+        val seq = frameSeq.incrementAndGet()
+        // Log every ~90 frames (approx 3 s at 30 fps) to avoid flooding logcat
+        if (seq % 90L == 0L) {
+            Logger.v(Logger.ROUTER, "$TAG frame #$seq  ${width}x${height}  ptsUs=$ptsUs  sessions=${sessions.size}")
+        }
 
         val yCopy = ByteBuffer.allocateDirect(ySize).also  { it.put(yBuf.duplicate()); it.flip() }
         val uCopy = ByteBuffer.allocateDirect(uvSize).also { it.put(uBuf.duplicate()); it.flip() }
         val vCopy = ByteBuffer.allocateDirect(uvSize).also { it.put(vBuf.duplicate()); it.flip() }
 
-        val frame = MasterFrame(yCopy, uCopy, vCopy, width, height, frameSeq.incrementAndGet())
+        val frame = MasterFrame(yCopy, uCopy, vCopy, width, height, seq)
 
         // Offer to every surface thread — non-blocking, drops old frame if not consumed
         sessions.values.forEach { threads ->
@@ -81,11 +86,11 @@ object SurfaceRouter : FFmpegDecoder.FrameCallback {
     }
 
     override fun onError(code: Int, msg: String) {
-        Logger.e("$TAG decoder error $code: $msg")
+        Logger.e(Logger.ROUTER, "$TAG decoder error code=$code  msg=$msg")
     }
 
     override fun onEof() {
-        Logger.d("$TAG decoder EOF — file sources will loop")
+        Logger.d(Logger.ROUTER, "$TAG decoder EOF — file sources will loop")
     }
 
     // ── Session management ────────────────────────────────────────────────────
@@ -98,6 +103,7 @@ object SurfaceRouter : FFmpegDecoder.FrameCallback {
         formats: IntArray,
         fps: IntArray
     ) {
+        Logger.d(Logger.ROUTER, "$TAG registerSession: id=$sessionId  surfaces=${surfaces.size}  dims=${widths.zip(heights).map { "${it.first}x${it.second}" }}  formats=${formats.toList()}  fps=${fps.toList()}")
         unregisterSession(sessionId)  // replace any previous registration with this id
 
         val threads = surfaces.mapIndexedNotNull { i, surface ->
@@ -121,6 +127,7 @@ object SurfaceRouter : FFmpegDecoder.FrameCallback {
     }
 
     fun unregisterSession(sessionId: String) {
+        Logger.d(Logger.ROUTER, "$TAG unregisterSession: $sessionId")
         sessions.remove(sessionId)?.forEach { it.stopThread() }
         Logger.d("$TAG unregistered session=$sessionId")
     }

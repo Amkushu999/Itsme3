@@ -58,13 +58,13 @@ object InjectionServiceClient {
             injector = svc
             AppState.injectorService = svc
             bindPending = false
-            Logger.d("$TAG connected to InjectionService")
+            Logger.i(Logger.INJECTION, "$TAG connected to InjectionService — draining pending deliveries")
             drainPending()
         }
         override fun onServiceDisconnected(name: ComponentName?) {
             injector = null
             AppState.injectorService = null
-            Logger.d("$TAG disconnected — will reconnect on next call")
+            Logger.w(Logger.INJECTION, "$TAG disconnected from InjectionService — will reconnect on next call")
         }
     }
 
@@ -97,6 +97,7 @@ object InjectionServiceClient {
         val filtered = surfaces.filterIsInstance<Surface>()
         if (filtered.isEmpty()) return
 
+        Logger.d(Logger.INJECTION, "$TAG routeSurfaces: owner=${owner.javaClass.simpleName}  session=$sessionId  surfaces=${filtered.size}  w=${widths.toList()}  h=${heights.toList()}")
         val inj = injector
         if (inj != null) {
             deliverNow(inj, filtered, widths, heights, formats, fps, sessionId)
@@ -136,6 +137,7 @@ object InjectionServiceClient {
      * Previously the URL was silently dropped when not connected.
      */
     fun hotSwap(url: String) {
+        Logger.d(Logger.INJECTION, "$TAG hotSwap: url=$url")
         try {
             val inj = injector
             if (inj != null) {
@@ -154,6 +156,7 @@ object InjectionServiceClient {
     /** Ask InjectionService to start (or restart) the FFmpeg decoder with [url].
      *  If not yet connected, queues the call for delivery after connection. */
     fun startDecoder(url: String) {
+        Logger.d(Logger.INJECTION, "$TAG startDecoder: url=$url")
         try {
             val inj = injector
             if (inj != null) {

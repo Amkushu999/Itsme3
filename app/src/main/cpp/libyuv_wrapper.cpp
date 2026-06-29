@@ -7,9 +7,14 @@
 #include <memory>
 #include "libyuv.h"
 
-#define LOG_TAG "LibYuvWrapper"
-#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
-#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
+// LOG_TAG  = "LibYuvWrapper" → logcat -s LibYuvWrapper:D
+// DECODER_TAG = "DECODER"   → logcat -s DECODER:D (same unified category as ffmpeg_decoder.cpp)
+#define LOG_TAG     "LibYuvWrapper"
+#define DECODER_TAG "DECODER"
+#define LOGE(...)  __android_log_print(ANDROID_LOG_ERROR, LOG_TAG,     __VA_ARGS__)
+#define LOGD(...)  __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG,     __VA_ARGS__)
+#define LDECE(...) __android_log_print(ANDROID_LOG_ERROR, DECODER_TAG, __VA_ARGS__)
+#define LDECD(...) __android_log_print(ANDROID_LOG_DEBUG, DECODER_TAG, __VA_ARGS__)
 #define FG_TAG  "FACEGATE"
 #define LOGFG(...) __android_log_print(ANDROID_LOG_DEBUG, FG_TAG, __VA_ARGS__)
 

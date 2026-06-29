@@ -17,15 +17,12 @@ import com.itsme.amkush.utils.Logger
           if (lpparam.packageName == "android" || lpparam.packageName == "system") return
 
           Logger.init(true)
+          Logger.d(Logger.MAIN, "handleLoadPackage: pkg=${lpparam.packageName}  processName=${lpparam.processName}")
           Log.d("FACEGATE", "handleLoadPackage: " + lpparam.packageName)
-          Logger.d("Loading package: ${lpparam.packageName}")
 
           // Only hook Application.onCreate here.  All camera / anti-detection hooks are
           // installed inside hookApplication()'s afterHookedMethod callback, AFTER we
           // confirm this is the target package and set isHookingActive = true.
-          //
-          // Previously every hook was installed in every app process at handleLoadPackage
-          // time, paying significant JNI overhead on the entire device.
           hookApplication(lpparam)
       }
 
@@ -72,7 +69,7 @@ import com.itsme.amkush.utils.Logger
                               return
                           }
 
-                          Logger.d("Target app detected: ${lpparam.packageName} — FFmpeg camera block active")
+                          Logger.i(Logger.MAIN, "TARGET MATCHED: ${lpparam.packageName} — installing all hooks now")
                           Log.d("FACEGATE", "TARGET MATCHED: " + lpparam.packageName + " — installing all hooks now")
                           AppState.isHookingActive = true
 
@@ -119,17 +116,17 @@ import com.itsme.amkush.utils.Logger
                           try { EmulatorBypassHooks.hookAll(lpparam); Logger.d("Emulator bypass hooks installed") }
                           catch (e: Throwable) { Logger.e("Emulator bypass hooks failed", e) }
 
-                          try { RootBypassHooks.hookAll(lpparam); Logger.d("Root bypass hooks installed") }
-                          catch (e: Throwable) { Logger.e("Root bypass hooks failed", e) }
+                          try { RootBypassHooks.hookAll(lpparam); Logger.d(Logger.HOOK, "Root bypass hooks installed") }
+                          catch (e: Throwable) { Logger.e(Logger.HOOK, "Root bypass hooks failed: ${e.message}", e) }
 
-                          try { AntiXposedHooks.hookAll(lpparam); Logger.d("Anti-Xposed hooks installed") }
-                          catch (e: Throwable) { Logger.e("Anti-Xposed hooks failed", e) }
+                          try { AntiXposedHooks.hookAll(lpparam); Logger.d(Logger.HOOK, "Anti-Xposed hooks installed") }
+                          catch (e: Throwable) { Logger.e(Logger.HOOK, "Anti-Xposed hooks failed: ${e.message}", e) }
 
-                          try { SELinuxBypassHooks.hookAll(lpparam); Logger.d("SELinux bypass hooks installed") }
-                          catch (e: Throwable) { Logger.e("SELinux bypass hooks failed", e) }
+                          try { SELinuxBypassHooks.hookAll(lpparam); Logger.d(Logger.HOOK, "SELinux bypass hooks installed") }
+                          catch (e: Throwable) { Logger.e(Logger.HOOK, "SELinux bypass hooks failed: ${e.message}", e) }
 
-                          try { ClonerBypassHooks.hookAll(lpparam); Logger.d("Cloner bypass hooks installed") }
-                          catch (e: Throwable) { Logger.e("Cloner bypass hooks failed", e) }
+                          try { ClonerBypassHooks.hookAll(lpparam); Logger.d(Logger.HOOK, "Cloner bypass hooks installed") }
+                          catch (e: Throwable) { Logger.e(Logger.HOOK, "Cloner bypass hooks failed: ${e.message}", e) }
 
                           // NOTE: No decoder is started here.
                           // The FFmpeg pipeline runs in the MODULE PROCESS (InjectionService).

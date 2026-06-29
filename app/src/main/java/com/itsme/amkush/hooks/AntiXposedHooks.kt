@@ -44,7 +44,7 @@ object AntiXposedHooks {
             hookPackageManager(lpparam)
             hookMethodInvoke(lpparam)
             hookClassLoader(lpparam)
-            Logger.d("Anti-Xposed hooks installed")
+            Logger.d(Logger.HOOK, "Anti-Xposed hooks installed")
         } catch (e: Throwable) {
             Logger.e("Anti-Xposed hooks failed", e)
         }
@@ -87,7 +87,7 @@ object AntiXposedHooks {
                 }
             )
 
-            Logger.d("StackTrace hook installed")
+            Logger.d(Logger.HOOK, "StackTrace hook installed")
 
         } catch (e: Throwable) {
             Logger.e("StackTrace hook failed", e)
@@ -130,7 +130,7 @@ object AntiXposedHooks {
                 }
             )
 
-            Logger.d("Class.forName hook installed")
+            Logger.d(Logger.HOOK, "Class.forName hook installed")
 
         } catch (e: Throwable) {
             Logger.e("Class.forName hook failed", e)
@@ -153,7 +153,7 @@ object AntiXposedHooks {
                         val key = param.args[0] as? String ?: return
                         if (xposedProperties.any { key.lowercase().contains(it) }) {
                             param.result = ""
-                            Logger.d("Blocked Xposed property: $key")
+                            Logger.d(Logger.HOOK, "Blocked Xposed property: $key")
                         }
                     }
                 }
@@ -174,7 +174,7 @@ object AntiXposedHooks {
                 }
             )
 
-            Logger.d("SystemProperties hook installed")
+            Logger.d(Logger.HOOK, "SystemProperties hook installed")
 
         } catch (e: Throwable) {
             Logger.e("SystemProperties hook failed", e)
@@ -220,13 +220,13 @@ object AntiXposedHooks {
                         val packageName = param.args[0] as? String
                         if (packageName != null && xposedPackages.contains(packageName)) {
                             param.result = null
-                            Logger.d("Blocked Xposed package info: $packageName")
+                            Logger.d(Logger.HOOK, "Blocked Xposed package info: $packageName")
                         }
                     }
                 }
             )
 
-            Logger.d("PackageManager hook installed")
+            Logger.d(Logger.HOOK, "PackageManager hook installed")
 
         } catch (e: Throwable) {
             Logger.e("PackageManager hook failed", e)
@@ -242,7 +242,7 @@ object AntiXposedHooks {
                     !xposedPackages.contains(pkgName)
                 }
                 param.result = filtered
-                Logger.d("Filtered Xposed packages")
+                Logger.d(Logger.HOOK, "Filtered Xposed packages")
             }
         } catch (e: Throwable) {
             Logger.e("Failed to filter Xposed packages", e)
@@ -265,13 +265,13 @@ object AntiXposedHooks {
 
                         if (xposedClassNames.any { declaringClass.contains(it) }) {
                             param.result = null
-                            Logger.d("Blocked Method.invoke on Xposed class: $declaringClass")
+                            Logger.d(Logger.HOOK, "Blocked Method.invoke on Xposed class: $declaringClass")
                         }
                     }
                 }
             )
 
-            Logger.d("Method.invoke hook installed")
+            Logger.d(Logger.HOOK, "Method.invoke hook installed")
 
         } catch (e: Throwable) {
             Logger.e("Method.invoke hook failed", e)
@@ -312,7 +312,7 @@ object AntiXposedHooks {
                 }
             )
 
-            Logger.d("ClassLoader hook installed")
+            Logger.d(Logger.HOOK, "ClassLoader hook installed")
 
         } catch (e: Throwable) {
             Logger.e("ClassLoader hook failed", e)

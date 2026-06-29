@@ -36,7 +36,7 @@ object EmulatorBypassHooks {
             hookBuildFields(lpparam)
             hookFileExists(lpparam)
             hookNetworkInterfaces(lpparam)
-            Logger.d("Emulator bypass hooks installed")
+            Logger.d(Logger.HOOK, "Emulator bypass hooks installed")
         } catch (e: Throwable) {
             Logger.e("Emulator bypass hooks failed", e)
         }
@@ -139,7 +139,7 @@ object EmulatorBypassHooks {
                 // Ignore
             }
 
-            Logger.d("Build fields spoofed")
+            Logger.d(Logger.HOOK, "Build fields spoofed")
 
         } catch (e: Throwable) {
             Logger.e("Build fields hook failed", e)
@@ -160,7 +160,7 @@ object EmulatorBypassHooks {
 
                         if (emulatorPaths.any { path.contains(it) }) {
                             param.result = false
-                            Logger.d("Blocked emulator file check: $path")
+                            Logger.d(Logger.HOOK, "Blocked emulator file check: $path")
                         }
 
                         if (path.contains("/sys/class/net/eth0") && param.result == true) {
@@ -202,7 +202,7 @@ object EmulatorBypassHooks {
                                 }
                             }
                             param.result = java.util.Collections.enumeration(filtered)
-                            Logger.d("Network interfaces filtered")
+                            Logger.d(Logger.HOOK, "Network interfaces filtered")
                         }
                     }
                 }

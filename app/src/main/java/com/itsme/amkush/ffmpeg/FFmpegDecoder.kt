@@ -46,6 +46,8 @@ object FFmpegDecoder {
 
     init {
         System.loadLibrary("ffmpeg_decoder")
+        // Confirm native lib loaded — visible in DECODER logcat
+        android.util.Log.d("DECODER", "FFmpegDecoder: native lib loaded")
     }
 
     /**

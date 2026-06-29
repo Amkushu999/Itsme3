@@ -67,6 +67,7 @@ object Camera2Hooks {
         ConcurrentHashMap()
 
     fun hookAll(lpparam: XC_LoadPackage.LoadPackageParam) {
+        Logger.d(Logger.HOOK, "$TAG hookAll: pkg=${lpparam.packageName}")
         try {
             hookImageReader(lpparam)
             hookSurfaceTexture(lpparam)
@@ -75,9 +76,9 @@ object Camera2Hooks {
             hookOpenCamera(lpparam)
             hookCameraDeviceMethods(lpparam)
             hookCaptureSessionMethods(lpparam)
-            Logger.d("$TAG installed")
+            Logger.i(Logger.HOOK, "$TAG all Camera2 hooks installed for ${lpparam.packageName}")
         } catch (e: Throwable) {
-            Logger.e("$TAG hookAll failed", e)
+            Logger.e(Logger.HOOK, "$TAG hookAll failed: ${e.message}", e)
         }
     }
 
