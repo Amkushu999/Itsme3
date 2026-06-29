@@ -75,4 +75,19 @@ object FFmpegDecoder {
 
     /** Returns the decoded stream height (0 if the handle is invalid or stream not yet opened). */
     @JvmStatic external fun getHeight(handle: Long): Int
+
+    /**
+     * Check if the decoder is currently using hardware acceleration (MediaCodec).
+     *
+     * Returns true if FFmpeg successfully initialized a hardware decoder (h264_mediacodec,
+     * hevc_mediacodec, vp8_mediacodec, or vp9_mediacodec). Returns false if using software
+     * decoding or if the handle is invalid.
+     *
+     * Hardware decoding reduces CPU usage by 60-80% and significantly improves battery life,
+     * but may not be available on all devices or for all codecs.
+     *
+     * @param handle Opaque native handle returned by [open]
+     * @return true if using hardware decoder, false if using software decoder or handle invalid
+     */
+    @JvmStatic external fun isUsingHardwareDecoder(handle: Long): Boolean
 }
