@@ -89,7 +89,7 @@ target_compile_options(libyuv_wrapper PRIVATE
 )
 
 target_link_libraries(libyuv_wrapper
-    swscale avutil ${log-lib}
+    swscale avutil ${log-lib} ${android-lib}
 )
 
 target_compile_features(libyuv_wrapper PRIVATE cxx_std_14)
