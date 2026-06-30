@@ -31,16 +31,10 @@ import com.itsme.amkush.ffmpeg.FFmpegDecoder
 import com.itsme.amkush.libyuv.LibYuv
 import kotlinx.coroutines.*
 import java.nio.ByteBuffer
-import java.util.concurrent.ConcurrentLinkedQueue
-import java.util.concurrent.atomic.AtomicBoolean
-
 private val Violet  = Color(0xFF6C63FF)
 private val BgDark  = Color(0xFF0D0D18)
 private val Border  = Color(0x1AFFFFFF)
 private val TextMid = Color(0x88FFFFFF)
-
-/** Minimum audio buffer to start playback — prevents choppy startup. */
-private const val AUDIO_BUFFER_TARGET_MS = 200L
 
 @Composable
 fun StreamPreviewDialog(url: String, onDismiss: () -> Unit) {
@@ -55,120 +49,149 @@ fun StreamPreviewDialog(url: String, onDismiss: () -> Unit) {
     // Use a dedicated scope that we control fully
     val scope = rememberCoroutineScope()
 
-    // Audio track reference
+    // Holds the AudioTrack reference so onDispose can stop/release it.
+    // Written from the native decode thread on first audio frame; read only in onDispose.
     val audioTrackRef = remember { mutableStateOf<AudioTrack?>(null) }
-    val audioQueue = remember { ConcurrentLinkedQueue<ByteArray>() }
-    val audioInitialized = remember { AtomicBoolean(false) }
 
     DisposableEffect(url) {
         var reusableBitmap: Bitmap? = null
         var reusableRgbaBuf: ByteBuffer? = null
 
-        // --- AudioTrack setup helper ---
-        fun initAudioTrack(sampleRate: Int, channels: Int): AudioTrack? {
-            val channelConfig = if (channels >= 2)
-                AudioFormat.CHANNEL_OUT_STEREO
-            else
-                AudioFormat.CHANNEL_OUT_MONO
-
-            val minBufSize = AudioTrack.getMinBufferSize(
-                sampleRate, channelConfig, AudioFormat.ENCODING_PCM_16BIT
-            ).coerceAtLeast(4096)
-
-            return try {
-                AudioTrack.Builder()
-                    .setAudioAttributes(
-                        AudioAttributes.Builder()
-                            .setUsage(AudioAttributes.USAGE_MEDIA)
-                            .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE)
-                            .build()
-                    )
-                    .setAudioFormat(
-                        AudioFormat.Builder()
-                            .setSampleRate(sampleRate)
-                            .setChannelMask(channelConfig)
-                            .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                            .build()
-                    )
-                    .setBufferSizeInBytes(minBufSize * 2)
-                    .setTransferMode(AudioTrack.MODE_STREAM)
-                    .build()
-                    .apply {
-                        if (playState != AudioTrack.PLAYSTATE_PLAYING) {
-                            play()
-                        }
-                    }
-            } catch (e: Exception) {
-                android.util.Log.e("StreamPreview", "AudioTrack init failed", e)
-                null
-            }
-        }
-
-        // --- Audio pump loop ---
-        // Runs on a dedicated thread to feed AudioTrack from the queue
-        val audioPumpJob = scope.launch(Dispatchers.IO) {
-            var bufferedMs = 0L
-            val startTime = System.currentTimeMillis()
-
-            while (isActive) {
-                val data = audioQueue.poll()
-                if (data != null && data.isNotEmpty()) {
-                    val track = audioTrackRef.value
-                    if (track != null && track.playState == AudioTrack.PLAYSTATE_PLAYING) {
-                        track.write(data, 0, data.size)
-                    }
-                } else {
-                    // Small yield to prevent busy-wait
-                    delay(5)
-                }
-            }
-        }
-
         val frameCallback = object : FFmpegDecoder.FrameCallback {
 
-            // Throttle surface updates to ~30fps to reduce CompositionEngine spam
-            private var lastFrameTimeNs = 0L
-            private val minFrameIntervalNs = 33_333_333L // ~30fps
+            // ── Master clock state ────────────────────────────────────────────
+            // All three fields are only ever touched from the native decode thread
+            // (which is single-threaded and sequential), so no locking is needed.
+            private var audioTrack: AudioTrack? = null
+            private var masterStartPtsUs = 0L
+            private var isClockInitialized = false
 
+            // Creates the AudioTrack with a 4× buffer.
+            // The oversized buffer is the "shock absorber": while the decode thread
+            // sleeps waiting for video to sync, the hardware keeps playing from its
+            // pre-filled PCM reservoir without stuttering.
+            private fun setupAudioTrack(sampleRate: Int, channels: Int) {
+                val channelConfig = if (channels >= 2)
+                    AudioFormat.CHANNEL_OUT_STEREO
+                else
+                    AudioFormat.CHANNEL_OUT_MONO
+
+                val minBufSize = AudioTrack.getMinBufferSize(
+                    sampleRate, channelConfig, AudioFormat.ENCODING_PCM_16BIT
+                ).coerceAtLeast(4096)
+
+                val track = try {
+                    AudioTrack.Builder()
+                        .setAudioAttributes(
+                            AudioAttributes.Builder()
+                                .setUsage(AudioAttributes.USAGE_MEDIA)
+                                .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE)
+                                .build()
+                        )
+                        .setAudioFormat(
+                            AudioFormat.Builder()
+                                .setSampleRate(sampleRate)
+                                .setChannelMask(channelConfig)
+                                .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                                .build()
+                        )
+                        .setBufferSizeInBytes(minBufSize * 4) // 4× shock absorber
+                        .setTransferMode(AudioTrack.MODE_STREAM)
+                        .build()
+                } catch (e: Exception) {
+                    android.util.Log.e("StreamPreview", "AudioTrack init failed", e)
+                    null
+                }
+
+                audioTrack = track
+                // Expose to onDispose via the Compose ref (safe — Compose state uses a lock)
+                audioTrackRef.value = track
+            }
+
+            // ── Audio is King ─────────────────────────────────────────────────
+            // C++ now calls onAudioFrameWithPts instead of onAudioFrame, giving us
+            // the stream PTS so we can anchor the audio hardware clock.
+            override fun onAudioFrameWithPts(
+                pcmBuf: ByteBuffer, sampleRate: Int, channels: Int, samples: Int, ptsUs: Long
+            ) {
+                if (!isClockInitialized) {
+                    setupAudioTrack(sampleRate, channels)
+                    audioTrack?.play()
+                    masterStartPtsUs  = ptsUs
+                    isClockInitialized = true
+                    // Update UI indicator on main thread
+                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        audioEnabled = audioTrack != null
+                    }
+                }
+
+                // Write PCM directly and blocking — the hardware clock dictates
+                // the true playback speed. No intermediate queue needed.
+                val bytes = samples * channels * 2  // S16LE = 2 bytes/sample
+                val array = ByteArray(bytes)
+                pcmBuf.get(array)
+                audioTrack?.write(array, 0, bytes, AudioTrack.WRITE_BLOCKING)
+            }
+
+            // ── Video synced to audio clock ───────────────────────────────────
             override fun onFrameAvailable(
                 yBuf: ByteBuffer, uBuf: ByteBuffer, vBuf: ByteBuffer,
                 width: Int, height: Int, ptsUs: Long
             ) {
-                // Throttle: skip frames if we're rendering too fast
-                val now = System.nanoTime()
-                if (now - lastFrameTimeNs < minFrameIntervalNs) {
+                val track = audioTrack
+                if (!isClockInitialized || track == null) {
+                    // Audio hasn't started yet — hold off rendering.
+                    // This prevents video from racing ahead at startup.
                     return
                 }
-                lastFrameTimeNs = now
 
+                // Ask the audio hardware exactly where it is right now.
+                // playbackHeadPosition wraps at 2^31 on some devices; mask to uint32.
+                val playedFrames  = track.playbackHeadPosition.toLong() and 0xFFFFFFFFL
+                val playedTimeUs  = playedFrames * 1_000_000L / track.sampleRate
+                val audioNowUs    = masterStartPtsUs + playedTimeUs
+                val delayUs       = ptsUs - audioNowUs
+
+                when {
+                    delayUs > 15_000L -> {
+                        // Video is >15 ms ahead of audio — sleep and let audio catch up.
+                        // Safe because the 4× AudioTrack buffer keeps audio playing
+                        // smoothly even while this thread is parked.
+                        Thread.sleep(delayUs / 1_000L)
+                    }
+                    delayUs < -100_000L -> {
+                        // Video is >100 ms behind audio — device is under heavy load.
+                        // Drop this frame so video can sprint to catch up.
+                        return
+                    }
+                    // else: within ±15 ms window — render immediately
+                }
+
+                // ── Render I420 → RGBA → SurfaceView ─────────────────────────
                 val needsResize = reusableBitmap == null ||
-                                  reusableBitmap!!.width != width ||
+                                  reusableBitmap!!.width  != width ||
                                   reusableBitmap!!.height != height
-
                 if (needsResize) {
                     reusableBitmap?.recycle()
-                    reusableBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                    reusableBitmap  = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
                     reusableRgbaBuf = ByteBuffer.allocateDirect(width * height * 4)
                 }
 
-                val bmp = reusableBitmap!!
+                val bmp     = reusableBitmap!!
                 val rgbaBuf = reusableRgbaBuf!!
 
                 rgbaBuf.rewind()
                 val ret = LibYuv.convertInto(
                     srcY = yBuf, srcU = uBuf, srcV = vBuf,
                     srcW = width, srcH = height,
-                    srcStrideY = width, srcStrideU = (width + 1) / 2, srcStrideV = (width + 1) / 2,
+                    srcStrideY = width,
+                    srcStrideU = (width + 1) / 2,
+                    srcStrideV = (width + 1) / 2,
                     dstW = width, dstH = height,
                     dstFmt = android.graphics.PixelFormat.RGBA_8888,
                     dst = rgbaBuf
                 )
-
-                if (ret != 0) {
-                    // Post error on main thread — don't use scope.launch from native thread
-                    // Use a safe handler instead
-                    return
-                }
+                if (ret != 0) return
 
                 rgbaBuf.rewind()
                 bmp.copyPixelsFromBuffer(rgbaBuf)
@@ -178,8 +201,11 @@ fun StreamPreviewDialog(url: String, onDismiss: () -> Unit) {
                     val canvas = holder.lockCanvas()
                     if (canvas != null) {
                         try {
-                            val dstRect = android.graphics.Rect(0, 0, canvas.width, canvas.height)
-                            canvas.drawBitmap(bmp, null, dstRect, null)
+                            canvas.drawBitmap(
+                                bmp, null,
+                                android.graphics.Rect(0, 0, canvas.width, canvas.height),
+                                null
+                            )
                         } finally {
                             holder.unlockCanvasAndPost(canvas)
                         }
@@ -187,36 +213,11 @@ fun StreamPreviewDialog(url: String, onDismiss: () -> Unit) {
                 }
 
                 if (!liveTag) {
-                    // Use Handler to post to main thread from native callback
                     android.os.Handler(android.os.Looper.getMainLooper()).post {
                         buffering = false
-                        liveTag = true
+                        liveTag   = true
                     }
                 }
-            }
-
-            override fun onAudioFrame(
-                pcmBuf: ByteBuffer,
-                sampleRate: Int,
-                channels: Int,
-                samples: Int
-            ) {
-                // Initialize AudioTrack on first audio frame if not done yet
-                if (audioInitialized.compareAndSet(false, true)) {
-                    android.os.Handler(android.os.Looper.getMainLooper()).post {
-                        val track = initAudioTrack(sampleRate, channels)
-                        audioTrackRef.value = track
-                        audioEnabled = track != null
-                    }
-                    // Small delay to let AudioTrack init before queueing
-                    Thread.sleep(50)
-                }
-
-                // Copy data out of the native-backed buffer immediately
-                val sizeBytes = samples * channels * 2 // S16 = 2 bytes
-                val copy = ByteArray(sizeBytes)
-                pcmBuf.get(copy)
-                audioQueue.offer(copy)
             }
 
             override fun onError(code: Int, msg: String) {
@@ -226,7 +227,10 @@ fun StreamPreviewDialog(url: String, onDismiss: () -> Unit) {
             }
 
             override fun onEof() {
-                // Stream ended — could auto-reconnect or show indicator
+                // Reset the master clock on EOF so a looped stream restarts in sync.
+                audioTrack?.flush()
+                audioTrack?.pause()
+                isClockInitialized = false
             }
         }
 
@@ -243,7 +247,6 @@ fun StreamPreviewDialog(url: String, onDismiss: () -> Unit) {
 
         onDispose {
             openJob.cancel()
-            audioPumpJob.cancel()
 
             if (decoderHandle.value != 0L) {
                 scope.launch(Dispatchers.IO) {
@@ -252,18 +255,16 @@ fun StreamPreviewDialog(url: String, onDismiss: () -> Unit) {
                 decoderHandle.value = 0L
             }
 
-            // Drain and cleanup audio
-            audioQueue.clear()
             audioTrackRef.value?.apply {
-                if (playState == AudioTrack.PLAYSTATE_PLAYING) {
-                    stop()
-                }
+                try {
+                    if (playState == AudioTrack.PLAYSTATE_PLAYING) stop()
+                } catch (_: Exception) {}
                 release()
             }
             audioTrackRef.value = null
 
             reusableBitmap?.recycle()
-            reusableBitmap = null
+            reusableBitmap  = null
             reusableRgbaBuf = null
         }
     }

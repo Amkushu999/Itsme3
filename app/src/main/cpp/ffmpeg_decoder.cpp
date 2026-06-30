@@ -402,8 +402,11 @@ static void fireOnFrame(JNIEnv* env, jobject cb, AVFrame* f, jlong ptsUs) {
 }
 
 // ── Audio delivery to Kotlin ─────────────────────────────────────────────────
+// NOTE: ptsUs is passed so StreamPreviewDialog can use it as an A/V sync clock.
+// Other FrameCallback implementations (InjectionService etc.) receive the call
+// via the default onAudioFrameWithPts → onAudioFrame delegation and are unaffected.
 static void fireOnAudio(JNIEnv* env, jobject cb, const uint8_t* pcmData, int sizeBytes,
-                        int sampleRate, int channels, int samplesPerChannel) {
+                        int sampleRate, int channels, int samplesPerChannel, jlong ptsUs) {
     jobject pcmBuf = env->NewDirectByteBuffer(const_cast<uint8_t*>(pcmData), sizeBytes);
     if (!pcmBuf) {
         LOGE("fireOnAudio: NewDirectByteBuffer failed");
@@ -413,12 +416,13 @@ static void fireOnAudio(JNIEnv* env, jobject cb, const uint8_t* pcmData, int siz
     env->CallVoidMethod(cb, g_onAudioFrame, pcmBuf,
                         static_cast<jint>(sampleRate),
                         static_cast<jint>(channels),
-                        static_cast<jint>(samplesPerChannel));
+                        static_cast<jint>(samplesPerChannel),
+                        ptsUs);
 
     env->DeleteLocalRef(pcmBuf);
 
     if (env->ExceptionCheck()) {
-        LOGE("fireOnAudio: onAudioFrame threw a Java exception");
+        LOGE("fireOnAudio: onAudioFrameWithPts threw a Java exception");
         env->ExceptionClear();
     }
 }
@@ -547,8 +551,20 @@ static void processAudioFrame(DecoderCtx* ctx, JNIEnv* env, jobject cb, AVFrame*
 
     if (converted > 0) {
         int deliveredBytes = converted * outChannels * bytesPerSample;
+
+        // Compute audio PTS in microseconds for A/V sync (StreamPreviewDialog master clock).
+        // Prefer decodedFrame->pts; fall back to best_effort_timestamp if unset.
+        jlong audioPtsUs = 0;
+        if (decodedFrame->pts != AV_NOPTS_VALUE) {
+            audioPtsUs = av_rescale_q(decodedFrame->pts,
+                                      ctx->audioTimeBase, {1, 1000000});
+        } else if (decodedFrame->best_effort_timestamp != AV_NOPTS_VALUE) {
+            audioPtsUs = av_rescale_q(decodedFrame->best_effort_timestamp,
+                                      ctx->audioTimeBase, {1, 1000000});
+        }
+
         fireOnAudio(env, cb, ctx->audioBuffer, deliveredBytes,
-                    ctx->audioCodecCtx->sample_rate, outChannels, converted);
+                    ctx->audioCodecCtx->sample_rate, outChannels, converted, audioPtsUs);
     }
 }
 
@@ -754,9 +770,12 @@ extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void*) {
             g_frameCallbackClass, "onError", "(ILjava/lang/String;)V");
         g_onEof = env->GetMethodID(
             g_frameCallbackClass, "onEof", "()V");
+        // Resolve the new onAudioFrameWithPts method (adds jlong ptsUs as 5th arg).
+        // The Kotlin interface provides a default body that delegates to onAudioFrame,
+        // so existing callers (InjectionService etc.) need no changes.
         g_onAudioFrame = env->GetMethodID(
-            g_frameCallbackClass, "onAudioFrame",
-            "(Ljava/nio/ByteBuffer;III)V");
+            g_frameCallbackClass, "onAudioFrameWithPts",
+            "(Ljava/nio/ByteBuffer;IIIJ)V");
 
         g_methodsCached = (g_onFrameAvailable && g_onError && g_onEof && g_onAudioFrame);
         if (!g_methodsCached) {

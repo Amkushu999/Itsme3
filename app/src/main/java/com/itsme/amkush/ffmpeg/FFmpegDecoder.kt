@@ -70,6 +70,27 @@ object FFmpegDecoder {
             // Default empty implementation so existing callers don't break
         }
 
+        /**
+         * Called by C++ with the decoded audio PTS in microseconds.
+         * Used by StreamPreviewDialog as an A/V sync master clock.
+         *
+         * Default implementation delegates to [onAudioFrame] so that all other
+         * FrameCallback implementations (InjectionService, etc.) continue to work
+         * without any changes — they simply never override this method.
+         *
+         * IMPORTANT: Do NOT change the JVM signature — C++ resolves this method by
+         * name + descriptor "(Ljava/nio/ByteBuffer;IIIJ)V" in JNI_OnLoad.
+         */
+        fun onAudioFrameWithPts(
+            pcmBuf: ByteBuffer,
+            sampleRate: Int,
+            channels: Int,
+            samples: Int,
+            ptsUs: Long
+        ) {
+            onAudioFrame(pcmBuf, sampleRate, channels, samples)
+        }
+
         fun onError(code: Int, msg: String)
         fun onEof()
     }
