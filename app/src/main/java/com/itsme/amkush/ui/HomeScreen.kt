@@ -183,12 +183,19 @@ private fun HomeScreenContent(
             try {
                 val pm = context.packageManager
                 val pkgs = pm.getInstalledApplications(0)
-                val apps = pkgs.map { pkg ->
-                    val name = pm.getApplicationLabel(pkg).toString()
-                    val icon = try { pm.getApplicationIcon(pkg) } catch (_: Exception) { null }
-                    val isSys = (pkg.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0
-                    AppInfo(pkg.packageName, name, icon, isSys)
-                }.sortedBy { it.appName.lowercase() }
+                val apps = pkgs
+                    .filter { pkg ->
+                        val isSys = (pkg.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0
+                        val isUpdatedSys = (pkg.flags and android.content.pm.ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0
+                        // Keep only pure user-installed apps; exclude system apps and this module itself
+                        (!isSys || isUpdatedSys) && pkg.packageName != context.packageName
+                    }
+                    .map { pkg ->
+                        val name = pm.getApplicationLabel(pkg).toString()
+                        val icon = try { pm.getApplicationIcon(pkg) } catch (_: Exception) { null }
+                        AppInfo(pkg.packageName, name, icon, false)
+                    }
+                    .sortedBy { it.appName.lowercase() }
                 withContext(Dispatchers.Main) {
                     appList = apps
                     loading = false
