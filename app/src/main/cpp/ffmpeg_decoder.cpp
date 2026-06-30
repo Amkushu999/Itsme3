@@ -129,6 +129,10 @@ static void detachCurrentThread() {
     g_jvm->DetachCurrentThread();
 }
 
+// Forward declaration — closeStream is defined after openStream but called within it
+// for error-path cleanup.  Without this, C++ refuses to compile (undeclared identifier).
+static void closeStream(DecoderCtx* ctx);
+
 // ── Protocol-aware demuxer options ───────────────────────────────────────────
 static void buildDemuxerOpts(AVDictionary** opts, const std::string& url) {
     std::string scheme;
