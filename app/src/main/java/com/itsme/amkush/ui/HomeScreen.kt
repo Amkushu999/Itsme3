@@ -63,7 +63,9 @@ class HomeScreen : ComponentActivity() {
                         putExtra("target_app_name", app.appName)
                     }
                     startActivity(intent)
-                    finish()
+                    // Do NOT finish() here — HomeScreen must stay in the back stack
+                    // so that pressing back in TabsScreen returns to HomeScreen rather
+                    // than exiting the app.
                 },
                 onProceedToPayment = { app ->
                     val intent = Intent(this, PaymentScreen::class.java).apply {

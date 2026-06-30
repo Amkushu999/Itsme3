@@ -72,10 +72,8 @@ fun DashboardContent(
         TabItem(TabScreen.SETTINGS, "Settings", R.drawable.ic_settings),
     )
 
-    BackHandler {
-        if (currentTab != TabScreen.HOME) currentTab = TabScreen.HOME
-        else onBack()
-    }
+    // Back always returns to HomeScreen — no exit from TabsScreen.
+    BackHandler { onBack() }
 
     Box(
         modifier = Modifier
