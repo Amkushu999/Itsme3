@@ -51,41 +51,6 @@ set_target_properties(crypto PROPERTIES
     IMPORTED_LOCATION "${OPENSSL_ABI_DIR}/lib/libcrypto.a"
 )
 
-# ── libyuv from source ────────────────────────────────────────────────────────
-set(LIBYUV_SRC_DIR "${CMAKE_SOURCE_DIR}/libyuv-src")
-
-if(NOT EXISTS "${LIBYUV_SRC_DIR}/include/libyuv.h")
-    message(FATAL_ERROR
-        "libyuv source not found at ${LIBYUV_SRC_DIR}/include/libyuv.h\n"
-        "Run: git clone https://chromium.googlesource.com/libyuv/libyuv.git "
-        "${LIBYUV_SRC_DIR}")
-endif()
-
-file(GLOB LIBYUV_SRCS "${LIBYUV_SRC_DIR}/source/*.cc")
-
-list(FILTER LIBYUV_SRCS EXCLUDE REGEX ".*_sve\\.cc$")
-list(FILTER LIBYUV_SRCS EXCLUDE REGEX ".*_sve2\\.cc$")
-list(FILTER LIBYUV_SRCS EXCLUDE REGEX ".*_sme\\.cc$")
-
-add_library(yuv STATIC ${LIBYUV_SRCS})
-target_include_directories(yuv PUBLIC "${LIBYUV_SRC_DIR}/include")
-
-target_compile_definitions(yuv PRIVATE
-    LIBYUV_DISABLE_SVE
-    LIBYUV_DISABLE_SVE2
-    LIBYUV_DISABLE_SME
-)
-
-target_compile_options(yuv PRIVATE -O3 -fPIC)
-
-if(ANDROID_ABI STREQUAL "arm64-v8a")
-    set_source_files_properties(
-        "${LIBYUV_SRC_DIR}/source/compare_neon64.cc"
-        "${LIBYUV_SRC_DIR}/source/row_neon64.cc"
-        PROPERTIES COMPILE_FLAGS "-march=armv8.2-a+dotprod+i8mm"
-    )
-endif()
-
 # ── System libraries ──────────────────────────────────────────────────────────
 find_library(log-lib     log)
 find_library(android-lib android)
@@ -111,11 +76,12 @@ target_link_libraries(ffmpeg_decoder
 
 target_compile_features(ffmpeg_decoder PRIVATE cxx_std_14)
 
-# ── libyuv_wrapper.so ─────────────────────────────────────────────────────────
-add_library(libyuv_wrapper SHARED libyuv_wrapper.cpp)
+# ── libyuv_wrapper.so (backed by libswscale — no libyuv dependency) ───────────
+# The JNI symbol name is unchanged so LibYuv.kt requires zero modifications.
+add_library(libyuv_wrapper SHARED swscale_wrapper.cpp)
 
 target_include_directories(libyuv_wrapper PRIVATE
-    "${LIBYUV_SRC_DIR}/include"
+    "${FFMPEG_ABI_DIR}/include"
 )
 
 target_compile_options(libyuv_wrapper PRIVATE
@@ -123,7 +89,7 @@ target_compile_options(libyuv_wrapper PRIVATE
 )
 
 target_link_libraries(libyuv_wrapper
-    yuv ${log-lib}
+    swscale avutil ${log-lib}
 )
 
 target_compile_features(libyuv_wrapper PRIVATE cxx_std_14)
