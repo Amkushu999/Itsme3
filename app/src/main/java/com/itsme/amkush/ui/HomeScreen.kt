@@ -123,23 +123,28 @@ private fun HomeScreenContent(
             }
         }
 
-        // Load saved target
-        val pkg  = SharedPrefs.getTargetPackage()
-        val name = SharedPrefs.getTargetAppName()
-        if (!pkg.isNullOrEmpty() && !name.isNullOrEmpty()) {
-            val found = appList.find { it.packageName == pkg }
-            selectedApp = found ?: AppInfo(pkg, name, null)
-        }
+        // NOTE: Do NOT restore selectedApp here. When this runs after the IO block,
+        // appList may not yet be visible in this snapshot (Compose state is updated via
+        // withContext(Main) but the continuation sees the old snapshot).
+        // LaunchedEffect(appList) below handles the restore once the list is populated.
     }
 
-    // Restore saved target once apps load
+    // Restore saved target once apps are loaded.
+    // BUG FIX: Previously guarded by `if (selectedApp == null)`, which caused the icon
+    // to stay null forever: the empty-list run set selectedApp = AppInfo(pkg, name, null),
+    // then this block fired again with the real list but skipped because selectedApp != null.
+    // Fix: always update selectedApp when the real AppInfo (with icon) is found.
     LaunchedEffect(appList) {
-        if (selectedApp == null) {
+        if (appList.isNotEmpty()) {
             val pkg  = SharedPrefs.getTargetPackage()
             val name = SharedPrefs.getTargetAppName()
             if (!pkg.isNullOrEmpty() && !name.isNullOrEmpty()) {
                 val found = appList.find { it.packageName == pkg }
-                selectedApp = found ?: AppInfo(pkg, name, null)
+                if (found != null) {
+                    selectedApp = found          // always update — found carries the real icon
+                } else if (selectedApp == null) {
+                    selectedApp = AppInfo(pkg, name, null)
+                }
             }
         }
     }

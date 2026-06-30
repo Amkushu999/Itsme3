@@ -4,6 +4,7 @@ package com.itsme.amkush.ui
   import android.content.ClipboardManager
   import android.content.Context
   import android.content.Intent
+  import android.graphics.Bitmap
   import android.net.Uri
   import android.os.Bundle
   import android.widget.Toast
@@ -87,6 +88,25 @@ package com.itsme.amkush.ui
       var loading  by remember { mutableStateOf(false) }
       var errorMsg by remember { mutableStateOf("") }
 
+      // Load the target app icon from PackageManager at runtime.
+      // PaymentScreen only receives String extras (package name + app name) — no Drawable
+      // is passed through the Intent. We look the icon up here so the chip shows the real
+      // icon instead of the initials fallback.
+      val appIconBitmap: Bitmap? = remember(targetPackage) {
+          targetPackage?.let { pkg ->
+              try {
+                  val drawable = context.packageManager.getApplicationIcon(pkg)
+                  val w = drawable.intrinsicWidth.takeIf  { it > 0 } ?: 48
+                  val h = drawable.intrinsicHeight.takeIf { it > 0 } ?: 48
+                  val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+                  val canvas = android.graphics.Canvas(bmp)
+                  drawable.setBounds(0, 0, canvas.width, canvas.height)
+                  drawable.draw(canvas)
+                  bmp
+              } catch (_: Exception) { null }
+          }
+      }
+
       LaunchedEffect(Unit) {
           SharedPrefs.init(context)
           SharedPrefs.setDeviceId(DeviceUtils.getFormattedDeviceId(context))
@@ -167,8 +187,17 @@ package com.itsme.amkush.ui
               if (!targetAppName.isNullOrEmpty()) {
                   Row(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Surface).border(1.dp, Border, RoundedCornerShape(16.dp)).padding(horizontal = 16.dp, vertical = 12.dp),
                       verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                      Box(modifier = Modifier.size(40.dp).clip(RoundedCornerShape(12.dp)).background(Violet), contentAlignment = Alignment.Center) {
-                          Text(targetAppName.take(2).uppercase(), color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                      // Show real app icon if available, fall back to coloured initials
+                      if (appIconBitmap != null) {
+                          Image(
+                              bitmap = appIconBitmap.asImageBitmap(),
+                              contentDescription = targetAppName,
+                              modifier = Modifier.size(40.dp).clip(RoundedCornerShape(12.dp))
+                          )
+                      } else {
+                          Box(modifier = Modifier.size(40.dp).clip(RoundedCornerShape(12.dp)).background(Violet), contentAlignment = Alignment.Center) {
+                              Text(targetAppName.take(2).uppercase(), color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                          }
                       }
                       Column(Modifier.weight(1f)) {
                           Text(targetAppName, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
