@@ -379,7 +379,7 @@ fun StreamPreviewDialog(url: String, onDismiss: () -> Unit) {
                                 strokeWidth = 2.dp
                             )
                             Text(
-                                "Connecting via Custom FFmpeg…",
+                                "Connecting…",
                                 color = TextMid,
                                 fontSize = 11.sp,
                                 fontFamily = FontFamily.Monospace
