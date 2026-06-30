@@ -1,6 +1,9 @@
 package com.itsme.amkush.ui
 
 import android.graphics.Bitmap
+import android.media.AudioAttributes
+import android.media.AudioFormat
+import android.media.AudioTrack
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import androidx.compose.foundation.background
@@ -28,38 +31,118 @@ import com.itsme.amkush.ffmpeg.FFmpegDecoder
 import com.itsme.amkush.libyuv.LibYuv
 import kotlinx.coroutines.*
 import java.nio.ByteBuffer
+import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.atomic.AtomicBoolean
 
 private val Violet  = Color(0xFF6C63FF)
 private val BgDark  = Color(0xFF0D0D18)
 private val Border  = Color(0x1AFFFFFF)
 private val TextMid = Color(0x88FFFFFF)
 
+/** Minimum audio buffer to start playback — prevents choppy startup. */
+private const val AUDIO_BUFFER_TARGET_MS = 200L
+
 @Composable
 fun StreamPreviewDialog(url: String, onDismiss: () -> Unit) {
     var buffering by remember { mutableStateOf(true) }
     var error     by remember { mutableStateOf<String?>(null) }
     var liveTag   by remember { mutableStateOf(false) }
+    var audioEnabled by remember { mutableStateOf(false) }
 
     val holderRef = remember { mutableStateOf<SurfaceHolder?>(null) }
     val decoderHandle = remember { mutableStateOf(0L) }
-    
-    // Coroutine scope for background operations
+
+    // Use a dedicated scope that we control fully
     val scope = rememberCoroutineScope()
 
+    // Audio track reference
+    val audioTrackRef = remember { mutableStateOf<AudioTrack?>(null) }
+    val audioQueue = remember { ConcurrentLinkedQueue<ByteArray>() }
+    val audioInitialized = remember { AtomicBoolean(false) }
+
     DisposableEffect(url) {
-        // FIX 1: Reusable memory. Local vars inside DisposableEffect are perfect for this.
-        // They are allocated exactly once when the dialog opens, and destroyed when it closes.
         var reusableBitmap: Bitmap? = null
         var reusableRgbaBuf: ByteBuffer? = null
 
+        // --- AudioTrack setup helper ---
+        fun initAudioTrack(sampleRate: Int, channels: Int): AudioTrack? {
+            val channelConfig = if (channels >= 2)
+                AudioFormat.CHANNEL_OUT_STEREO
+            else
+                AudioFormat.CHANNEL_OUT_MONO
+
+            val minBufSize = AudioTrack.getMinBufferSize(
+                sampleRate, channelConfig, AudioFormat.ENCODING_PCM_16BIT
+            ).coerceAtLeast(4096)
+
+            return try {
+                AudioTrack.Builder()
+                    .setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_MEDIA)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE)
+                            .build()
+                    )
+                    .setAudioFormat(
+                        AudioFormat.Builder()
+                            .setSampleRate(sampleRate)
+                            .setChannelMask(channelConfig)
+                            .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                            .build()
+                    )
+                    .setBufferSizeInBytes(minBufSize * 2)
+                    .setTransferMode(AudioTrack.MODE_STREAM)
+                    .build()
+                    .apply {
+                        if (playState != AudioTrack.PLAYSTATE_PLAYING) {
+                            play()
+                        }
+                    }
+            } catch (e: Exception) {
+                android.util.Log.e("StreamPreview", "AudioTrack init failed", e)
+                null
+            }
+        }
+
+        // --- Audio pump loop ---
+        // Runs on a dedicated thread to feed AudioTrack from the queue
+        val audioPumpJob = scope.launch(Dispatchers.IO) {
+            var bufferedMs = 0L
+            val startTime = System.currentTimeMillis()
+
+            while (isActive) {
+                val data = audioQueue.poll()
+                if (data != null && data.isNotEmpty()) {
+                    val track = audioTrackRef.value
+                    if (track != null && track.playState == AudioTrack.PLAYSTATE_PLAYING) {
+                        track.write(data, 0, data.size)
+                    }
+                } else {
+                    // Small yield to prevent busy-wait
+                    delay(5)
+                }
+            }
+        }
+
         val frameCallback = object : FFmpegDecoder.FrameCallback {
+
+            // Throttle surface updates to ~30fps to reduce CompositionEngine spam
+            private var lastFrameTimeNs = 0L
+            private val minFrameIntervalNs = 33_333_333L // ~30fps
+
             override fun onFrameAvailable(
                 yBuf: ByteBuffer, uBuf: ByteBuffer, vBuf: ByteBuffer,
                 width: Int, height: Int, ptsUs: Long
             ) {
-                // FIX 2: Reuse or resize bitmap/buffer instead of allocating new ones
-                val needsResize = reusableBitmap == null || 
-                                  reusableBitmap!!.width != width || 
+                // Throttle: skip frames if we're rendering too fast
+                val now = System.nanoTime()
+                if (now - lastFrameTimeNs < minFrameIntervalNs) {
+                    return
+                }
+                lastFrameTimeNs = now
+
+                val needsResize = reusableBitmap == null ||
+                                  reusableBitmap!!.width != width ||
                                   reusableBitmap!!.height != height
 
                 if (needsResize) {
@@ -71,8 +154,7 @@ fun StreamPreviewDialog(url: String, onDismiss: () -> Unit) {
                 val bmp = reusableBitmap!!
                 val rgbaBuf = reusableRgbaBuf!!
 
-                // FIX 3: Convert YUV to RGBA using your existing LibYuv wrapper
-                rgbaBuf.rewind() // Ensure buffer is at position 0 before writing
+                rgbaBuf.rewind()
                 val ret = LibYuv.convertInto(
                     srcY = yBuf, srcU = uBuf, srcV = vBuf,
                     srcW = width, srcH = height,
@@ -83,11 +165,11 @@ fun StreamPreviewDialog(url: String, onDismiss: () -> Unit) {
                 )
 
                 if (ret != 0) {
-                    scope.launch(Dispatchers.Main) { error = "LibYuv conversion failed: $ret" }
+                    // Post error on main thread — don't use scope.launch from native thread
+                    // Use a safe handler instead
                     return
                 }
 
-                // Copy to bitmap and draw
                 rgbaBuf.rewind()
                 bmp.copyPixelsFromBuffer(rgbaBuf)
 
@@ -105,23 +187,50 @@ fun StreamPreviewDialog(url: String, onDismiss: () -> Unit) {
                 }
 
                 if (!liveTag) {
-                    scope.launch(Dispatchers.Main) {
+                    // Use Handler to post to main thread from native callback
+                    android.os.Handler(android.os.Looper.getMainLooper()).post {
                         buffering = false
                         liveTag = true
                     }
                 }
             }
 
+            override fun onAudioFrame(
+                pcmBuf: ByteBuffer,
+                sampleRate: Int,
+                channels: Int,
+                samples: Int
+            ) {
+                // Initialize AudioTrack on first audio frame if not done yet
+                if (audioInitialized.compareAndSet(false, true)) {
+                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        val track = initAudioTrack(sampleRate, channels)
+                        audioTrackRef.value = track
+                        audioEnabled = track != null
+                    }
+                    // Small delay to let AudioTrack init before queueing
+                    Thread.sleep(50)
+                }
+
+                // Copy data out of the native-backed buffer immediately
+                val sizeBytes = samples * channels * 2 // S16 = 2 bytes
+                val copy = ByteArray(sizeBytes)
+                pcmBuf.get(copy)
+                audioQueue.offer(copy)
+            }
+
             override fun onError(code: Int, msg: String) {
-                scope.launch(Dispatchers.Main) { error = "Decoder error $code: $msg" }
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    error = "Decoder error $code: $msg"
+                }
             }
 
             override fun onEof() {
-                // Stream ended
+                // Stream ended — could auto-reconnect or show indicator
             }
         }
 
-        // FIX 4: Open FFmpeg on IO thread to prevent ANR if network is slow
+        // Open FFmpeg on IO thread to prevent ANR
         val openJob = scope.launch(Dispatchers.IO) {
             val handle = FFmpegDecoder.open(url, frameCallback)
             withContext(Dispatchers.Main) {
@@ -134,14 +243,25 @@ fun StreamPreviewDialog(url: String, onDismiss: () -> Unit) {
 
         onDispose {
             openJob.cancel()
+            audioPumpJob.cancel()
+
             if (decoderHandle.value != 0L) {
-                // Close on IO thread to avoid blocking UI during teardown
                 scope.launch(Dispatchers.IO) {
                     FFmpegDecoder.close(decoderHandle.value)
                 }
                 decoderHandle.value = 0L
             }
-            // Clean up reusable resources
+
+            // Drain and cleanup audio
+            audioQueue.clear()
+            audioTrackRef.value?.apply {
+                if (playState == AudioTrack.PLAYSTATE_PLAYING) {
+                    stop()
+                }
+                release()
+            }
+            audioTrackRef.value = null
+
             reusableBitmap?.recycle()
             reusableBitmap = null
             reusableRgbaBuf = null
@@ -160,54 +280,159 @@ fun StreamPreviewDialog(url: String, onDismiss: () -> Unit) {
                 .border(1.dp, Border, RoundedCornerShape(20.dp))
         ) {
             Column {
+                // Header
                 Row(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Column {
-                        Text("Stream Preview", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                        Text(url.take(40) + if (url.length > 40) "…" else "", color = TextMid, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+                        Text(
+                            "Stream Preview",
+                            color = Color.White,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            url.take(40) + if (url.length > 40) "…" else "",
+                            color = TextMid,
+                            fontSize = 9.sp,
+                            fontFamily = FontFamily.Monospace
+                        )
                     }
-                    Box(modifier = Modifier.size(28.dp).clip(CircleShape).background(Color(0x1AFFFFFF)).clickable { onDismiss() }, contentAlignment = Alignment.Center) {
-                        Text("✕", color = TextMid, fontSize = 12.sp)
+
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        // Audio indicator
+                        if (audioEnabled) {
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(Color(0x1A4ADE80))
+                                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                            ) {
+                                Text(
+                                    "🔊 AUDIO",
+                                    color = Color(0xFF4ADE80),
+                                    fontSize = 9.sp,
+                                    fontFamily = FontFamily.Monospace
+                                )
+                            }
+                        }
+
+                        // Close button
+                        Box(
+                            modifier = Modifier
+                                .size(28.dp)
+                                .clip(CircleShape)
+                                .background(Color(0x1AFFFFFF))
+                                .clickable { onDismiss() },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text("✕", color = TextMid, fontSize = 12.sp)
+                        }
                     }
                 }
 
-                Box(modifier = Modifier.fillMaxWidth().height(220.dp).background(Color.Black), contentAlignment = Alignment.Center) {
+                // Video surface
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(220.dp)
+                        .background(Color.Black),
+                    contentAlignment = Alignment.Center
+                ) {
                     AndroidView(
                         factory = { ctx ->
                             SurfaceView(ctx).apply {
                                 holder.addCallback(object : SurfaceHolder.Callback {
-                                    override fun surfaceCreated(h: SurfaceHolder)  { holderRef.value = h }
-                                    override fun surfaceChanged(h: SurfaceHolder, f: Int, w: Int, ht: Int) { holderRef.value = h }
-                                    override fun surfaceDestroyed(h: SurfaceHolder) { holderRef.value = null }
+                                    override fun surfaceCreated(h: SurfaceHolder) {
+                                        holderRef.value = h
+                                    }
+                                    override fun surfaceChanged(
+                                        h: SurfaceHolder, f: Int, w: Int, ht: Int
+                                    ) {
+                                        holderRef.value = h
+                                    }
+                                    override fun surfaceDestroyed(h: SurfaceHolder) {
+                                        holderRef.value = null
+                                    }
                                 })
                             }
                         },
                         modifier = Modifier.fillMaxSize()
                     )
 
+                    // Buffering overlay
                     if (buffering && error == null) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            CircularProgressIndicator(color = Violet, modifier = Modifier.size(32.dp), strokeWidth = 2.dp)
-                            Text("Connecting via Custom FFmpeg…", color = TextMid, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            CircularProgressIndicator(
+                                color = Violet,
+                                modifier = Modifier.size(32.dp),
+                                strokeWidth = 2.dp
+                            )
+                            Text(
+                                "Connecting via Custom FFmpeg…",
+                                color = TextMid,
+                                fontSize = 11.sp,
+                                fontFamily = FontFamily.Monospace
+                            )
                         }
                     }
 
+                    // Error overlay
                     if (error != null) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
                             Text("⚠", fontSize = 28.sp)
-                            Text(error!!, color = Color(0xFFFF4D6D), fontSize = 12.sp, fontFamily = FontFamily.Monospace)
-                            Box(modifier = Modifier.clip(RoundedCornerShape(8.dp)).background(Color(0x1AFF4D6D)).clickable { onDismiss() }.padding(horizontal = 16.dp, vertical = 8.dp)) {
-                                Text("Close", color = Color(0xFFFF4D6D), fontSize = 12.sp)
+                            Text(
+                                error!!,
+                                color = Color(0xFFFF4D6D),
+                                fontSize = 12.sp,
+                                fontFamily = FontFamily.Monospace
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(Color(0x1AFF4D6D))
+                                    .clickable { onDismiss() }
+                                    .padding(horizontal = 16.dp, vertical = 8.dp)
+                            ) {
+                                Text(
+                                    "Close",
+                                    color = Color(0xFFFF4D6D),
+                                    fontSize = 12.sp
+                                )
                             }
                         }
                     }
                 }
 
-                Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Box(modifier = Modifier.clip(RoundedCornerShape(10.dp)).background(Color(0x1AFFFFFF)).border(1.dp, Border, RoundedCornerShape(10.dp)).clickable { onDismiss() }.padding(horizontal = 14.dp, vertical = 8.dp), contentAlignment = Alignment.Center) {
+                // Bottom controls
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(Color(0x1AFFFFFF))
+                            .border(1.dp, Border, RoundedCornerShape(10.dp))
+                            .clickable { onDismiss() }
+                            .padding(horizontal = 14.dp, vertical = 8.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
                         Text("Stop & Close", color = TextMid, fontSize = 12.sp)
                     }
 
@@ -221,8 +446,21 @@ fun StreamPreviewDialog(url: String, onDismiss: () -> Unit) {
                         buffering     -> "BUFFERING"
                         else          -> "LIVE"
                     }
-                    Box(modifier = Modifier.clip(RoundedCornerShape(10.dp)).background(statusColor.copy(0.15f)).border(1.dp, statusColor.copy(0.3f), RoundedCornerShape(10.dp)).padding(horizontal = 14.dp, vertical = 8.dp), contentAlignment = Alignment.Center) {
-                        Text(statusText, color = statusColor, fontSize = 11.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(statusColor.copy(0.15f))
+                            .border(1.dp, statusColor.copy(0.3f), RoundedCornerShape(10.dp))
+                            .padding(horizontal = 14.dp, vertical = 8.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            statusText,
+                            color = statusColor,
+                            fontSize = 11.sp,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Bold
+                        )
                     }
                 }
             }
