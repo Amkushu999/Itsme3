@@ -11,7 +11,7 @@ import java.util.concurrent.TimeUnit
 
 object ApiClient {
     // NOTE: Dev LAN IP — intentionally kept for local debugging. Change before release.
-    private const val BASE_URL = "http://192.168.0.109:5000/"
+    private const val BASE_URL = "http://0.0.0.0:5000/"
     private const val TIMEOUT_SECONDS = 30L
 
     // BUG FIX: Correct double-checked locking (DCL) pattern for JVM.
