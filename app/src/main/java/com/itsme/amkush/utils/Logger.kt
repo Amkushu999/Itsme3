@@ -1,117 +1,151 @@
 package com.itsme.amkush.utils
 
-import android.util.Log
-import de.robv.android.xposed.XposedBridge
-import timber.log.Timber
+  import android.os.Environment
+  import android.util.Log
+  import de.robv.android.xposed.XposedBridge
+  import timber.log.Timber
+  import java.io.File
+  import java.io.FileWriter
+  import java.io.PrintWriter
+  import java.text.SimpleDateFormat
+  import java.util.Date
+  import java.util.Locale
+  import java.util.concurrent.Executors
 
-/**
- * Deep-logging utility with per-category logcat tags + Timber file sink.
- *
- * In the MODULE PROCESS (InjectionService, UI, Application):
- *   Logger.init(false) — routes through Timber.
- *   Plant FileLoggingTree in FaceGateApplication to capture to amkush_logs.txt.
- *
- * In the HOOK PROCESS (Xposed, target app):
- *   Logger.init(true)  — routes through XposedBridge.log() (LSPosed log viewer).
- *
- * ── Logcat filter commands ────────────────────────────────────────────────────
- *   adb logcat -s HOOK:D          All Xposed hook interceptions
- *   adb logcat -s DECODER:D       FFmpeg + LibYuv C++ + JNI decoder events
- *   adb logcat -s INJECTION:D     InjectionService + InjectionServiceClient
- *   adb logcat -s ROUTER:D        SurfaceRouter + FpsPacer + ImageLoopSource
- *   adb logcat -s IPC:D           FaceGateIpcProvider + RemoteConfig
- *   adb logcat -s UI:D            Fragments, screens, ViewModel, FFmpegKitHelper
- *   adb logcat -s MAIN:D          MainHook entry point
- *   adb logcat -s APP:D           Application + AppState + CameraState
- *   adb logcat -s FFmpegDecoder:D Native C++ per-frame events (unchanged)
- *   adb logcat -s LibYuvWrapper:D Native YUV conversion events (unchanged)
- *   adb logcat -s HOOK:D DECODER:D INJECTION:D ROUTER:D   — multi-tag
- *
- * ── File log ─────────────────────────────────────────────────────────────────
- *   adb pull /data/data/com.itsme.amkush/files/amkush_logs.txt
- *   adb shell run-as com.itsme.amkush cat /data/data/com.itsme.amkush/files/amkush_logs.txt
- */
-object Logger {
+  /**
+   * Deep-logging utility with per-category logcat tags + Timber file sink.
+   *
+   * In the MODULE PROCESS (InjectionService, UI, Application):
+   *   Logger.init(false) — routes through Timber.
+   *   Plant FileLoggingTree in FaceGateApplication to capture to amkush_logs.txt.
+   *
+   * In the HOOK PROCESS (Xposed, target app):
+   *   Logger.init(true) — routes through XposedBridge.log() AND writes to disk:
+   *     /sdcard/Download/com.itsme.amkush/amkush_hook_logs.txt  (no root needed)
+   *   Rotation: file > 10 MB → renamed to amkush_hook_logs_old.txt
+   *
+   * ── Logcat filter commands ────────────────────────────────────────────────────
+   *   adb logcat -s HOOK:V INJECTION:V ROUTER:V DECODER:V IPC:V
+   *   adb pull /sdcard/Download/com.itsme.amkush/amkush_hook_logs.txt
+   */
+  object Logger {
 
-    // ── Category tag constants ───────────────────────────────────────────────
-    const val HOOK      = "HOOK"
-    const val DECODER   = "DECODER"
-    const val UI        = "UI"
-    const val INJECTION = "INJECTION"
-    const val ROUTER    = "ROUTER"
-    const val IPC       = "IPC"
-    const val MAIN      = "MAIN"
-    const val APP       = "APP"
+      // ── Category tag constants ───────────────────────────────────────────────
+      const val HOOK      = "HOOK"
+      const val DECODER   = "DECODER"
+      const val UI        = "UI"
+      const val INJECTION = "INJECTION"
+      const val ROUTER    = "ROUTER"
+      const val IPC       = "IPC"
+      const val MAIN      = "MAIN"
+      const val APP       = "APP"
 
-    /** Legacy single tag kept for code not yet migrated to category tags. */
-    private const val LEGACY_TAG = "FaceGate"
+      private const val LEGACY_TAG = "FaceGate"
+      private const val MAX_HOOK_FILE_BYTES = 10L * 1024 * 1024  // 10 MB per rotation
 
-    @Volatile private var isXposedMode = false
+      @Volatile private var isXposedMode = false
 
-    fun init(xposedMode: Boolean) {
-        isXposedMode = xposedMode
-    }
+      // ── Hook-side file sink (lazy, Xposed mode only) ─────────────────────────
+      @Volatile private var hookLogFile: File? = null
+      @Volatile private var hookOldLogFile: File? = null
+      private val hookIoExecutor by lazy {
+          Executors.newSingleThreadExecutor { r ->
+              Thread(r, "FG-HookLog").apply { isDaemon = true }
+          }
+      }
+      private val hookDateFmt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US)
 
-    // ── Tagged methods (preferred) ───────────────────────────────────────────
+      fun init(xposedMode: Boolean) {
+          isXposedMode = xposedMode
+          if (xposedMode) {
+              try {
+                  val dir = File(
+                      Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+                      "com.itsme.amkush"
+                  )
+                  dir.mkdirs()
+                  hookLogFile    = File(dir, "amkush_hook_logs.txt")
+                  hookOldLogFile = File(dir, "amkush_hook_logs_old.txt")
+              } catch (_: Throwable) {}
+          }
+      }
 
-    /** Verbose — very detailed trace; use for entry/exit, parameter dumps. */
-    fun v(tag: String, message: String) {
-        if (isXposedMode) {
-            XposedBridge.log("[$tag/V] $message")
-        } else {
-            Timber.tag(tag).v(message)
-        }
-    }
+      // ── Tagged methods ───────────────────────────────────────────────────────
 
-    /** Debug — normal diagnostic messages. */
-    fun d(tag: String, message: String) {
-        if (isXposedMode) {
-            XposedBridge.log("[$tag/D] $message")
-        } else {
-            Timber.tag(tag).d(message)
-        }
-    }
+      fun v(tag: String, message: String) {
+          if (isXposedMode) { hookLog(Log.VERBOSE, tag, message) }
+          else              { Timber.tag(tag).v(message) }
+      }
 
-    /** Info — notable lifecycle events. */
-    fun i(tag: String, message: String) {
-        if (isXposedMode) {
-            XposedBridge.log("[$tag/I] $message")
-        } else {
-            Timber.tag(tag).i(message)
-        }
-    }
+      fun d(tag: String, message: String) {
+          if (isXposedMode) { hookLog(Log.DEBUG, tag, message) }
+          else              { Timber.tag(tag).d(message) }
+      }
 
-    /** Warning — unexpected but recoverable situations. */
-    fun w(tag: String, message: String, throwable: Throwable? = null) {
-        if (isXposedMode) {
-            XposedBridge.log("[$tag/W] $message")
-            throwable?.let { XposedBridge.log("[$tag/W] ${it.stackTraceToString()}") }
-        } else {
-            if (throwable != null) Timber.tag(tag).w(throwable, message)
-            else Timber.tag(tag).w(message)
-        }
-    }
+      fun i(tag: String, message: String) {
+          if (isXposedMode) { hookLog(Log.INFO, tag, message) }
+          else              { Timber.tag(tag).i(message) }
+      }
 
-    /** Error — failures that need attention; always include the Throwable when available. */
-    fun e(tag: String, message: String, throwable: Throwable? = null) {
-        if (isXposedMode) {
-            XposedBridge.log("[$tag/E] $message")
-            throwable?.let { XposedBridge.log("[$tag/E] ${it.stackTraceToString()}") }
-        } else {
-            if (throwable != null) Timber.tag(tag).e(throwable, message)
-            else Timber.tag(tag).e(message)
-        }
-    }
+      fun w(tag: String, message: String, throwable: Throwable? = null) {
+          if (isXposedMode) {
+              hookLog(Log.WARN, tag, message)
+              throwable?.let { hookLog(Log.WARN, tag, it.stackTraceToString()) }
+          } else {
+              if (throwable != null) Timber.tag(tag).w(throwable, message)
+              else Timber.tag(tag).w(message)
+          }
+      }
 
-    // ── Legacy untagged helpers (backward compat) ────────────────────────────
+      fun e(tag: String, message: String, throwable: Throwable? = null) {
+          if (isXposedMode) {
+              hookLog(Log.ERROR, tag, message)
+              throwable?.let { hookLog(Log.ERROR, tag, it.stackTraceToString()) }
+          } else {
+              if (throwable != null) Timber.tag(tag).e(throwable, message)
+              else Timber.tag(tag).e(message)
+          }
+      }
 
-    fun d(message: String) = d(LEGACY_TAG, message)
-    fun i(message: String) = i(LEGACY_TAG, message)
-    fun w(message: String) = w(LEGACY_TAG, message)
+      // ── Legacy untagged helpers (backward compat) ────────────────────────────
 
-    fun e(message: String, throwable: Throwable? = null) = e(LEGACY_TAG, message, throwable)
+      fun d(message: String) = d(LEGACY_TAG, message)
+      fun i(message: String) = i(LEGACY_TAG, message)
+      fun w(message: String) = w(LEGACY_TAG, message)
+      fun e(message: String, throwable: Throwable? = null) = e(LEGACY_TAG, message, throwable)
 
-    fun logException(tag: String, throwable: Throwable) {
-        e(tag, "Exception: ${throwable.message}", throwable)
-    }
-}
+      fun logException(tag: String, throwable: Throwable) {
+          e(tag, "Exception: ${throwable.message}", throwable)
+      }
+
+      // ── Hook-side log implementation ─────────────────────────────────────────
+
+      private fun hookLog(priority: Int, tag: String, message: String) {
+          val level = when (priority) {
+              Log.VERBOSE -> "V"; Log.DEBUG -> "D"; Log.INFO  -> "I"
+              Log.WARN    -> "W"; Log.ERROR -> "E"; else      -> "?"
+          }
+          // 1. XposedBridge — shows in LSPosed module log viewer
+          try { XposedBridge.log("[$tag/$level] $message") } catch (_: Throwable) {}
+
+          // 2. File sink — accessible without root via Downloads folder
+          val logFile    = hookLogFile    ?: return
+          val oldLogFile = hookOldLogFile ?: return
+          val thread     = Thread.currentThread().name
+          val ts         = hookDateFmt.format(Date())
+          val line       = "$ts $level/$tag [thread=$thread]: $message"
+
+          hookIoExecutor.execute {
+              try {
+                  if (logFile.length() >= MAX_HOOK_FILE_BYTES) {
+                      oldLogFile.delete()
+                      logFile.renameTo(oldLogFile)
+                  }
+                  FileWriter(logFile, true).use { fw ->
+                      PrintWriter(fw).use { pw -> pw.println(line) }
+                  }
+              } catch (_: Throwable) {}
+          }
+      }
+  }
+  

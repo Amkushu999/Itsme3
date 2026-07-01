@@ -31,7 +31,7 @@ class FaceGateApplication : Application() {
 
         Timber.plant(FileLoggingTree(
             filesDir       = logDir,
-            minPriority    = android.util.Log.DEBUG,
+            minPriority    = android.util.Log.VERBOSE,
             logFileName    = "amkush_logs.txt",
             oldLogFileName = "amkush_logs_old.txt"
         ))

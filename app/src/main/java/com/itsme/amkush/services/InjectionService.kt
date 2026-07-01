@@ -12,6 +12,7 @@ import com.itsme.amkush.R
 import com.itsme.amkush.ffmpeg.FFmpegDecoder
 import com.itsme.amkush.hooks.ConfigUpdateReceiver
 import com.itsme.amkush.ipc.ISurfaceInjector
+import com.itsme.amkush.ipc.UnixSocketServer
 import com.itsme.amkush.ipc.RemoteConfig
 import com.itsme.amkush.router.SurfaceRouter
 import android.net.Uri
@@ -168,10 +169,17 @@ class InjectionService : Service() {
         super.onCreate()
         isRunning = true
         AppState.context = applicationContext
-        createNotificationChannel()
-        startForeground(NOTIFICATION_ID, createNotification())
-        Logger.i(Logger.INJECTION, "$TAG created — FFmpeg native decoder ready")
-        Log.d("FACEGATE", "InjectionService: onCreate — foreground service started")
+          createNotificationChannel()
+          startForeground(NOTIFICATION_ID, createNotification())
+
+          // Create shared socket directory for Mochi Cloner fallback transport
+          try { File("/sdcard/Android/media/com.itsme.amkush").mkdirs() } catch (_: Throwable) {}
+
+          // Start Unix socket server (low-cost — only active when hook connects via socket)
+          UnixSocketServer.start()
+
+          Logger.i(Logger.INJECTION, "$TAG created — FFmpeg decoder + Unix socket server ready")
+          Log.d("FACEGATE", "InjectionService: onCreate — foreground service started")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -208,11 +216,12 @@ class InjectionService : Service() {
             decoderExecutor.shutdown() 
         }
         
-        RemoteConfig.clearAll(this)
-        sendConfigBroadcast(streamUrl = null, mediaUri = null, active = false)
-        isRunning = false
-        Log.d("FACEGATE", "InjectionService: onDestroy — service stopped")
-        super.onDestroy()
+        UnixSocketServer.stop()
+          RemoteConfig.clearAll(this)
+          sendConfigBroadcast(streamUrl = null, mediaUri = null, active = false)
+          isRunning = false
+          Log.d("FACEGATE", "InjectionService: onDestroy — service stopped")
+          super.onDestroy()
     }
 
     // ── Decoder management ────────────────────────────────────────────────────

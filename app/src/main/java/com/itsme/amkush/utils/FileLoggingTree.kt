@@ -33,7 +33,7 @@ import java.util.concurrent.TimeUnit
 class FileLoggingTree(
     filesDir: File,
     /** Minimum Android log priority to write. Default: Log.DEBUG to capture everything. */
-    private val minPriority: Int = Log.DEBUG,
+    private val minPriority: Int = Log.VERBOSE,
     /** File name inside filesDir */
     logFileName: String = "amkush_logs.txt",
     oldLogFileName: String = "amkush_logs_old.txt"
@@ -50,7 +50,7 @@ class FileLoggingTree(
     }
 
     companion object {
-        private const val MAX_FILE_BYTES = 5L * 1024 * 1024  // 5 MB
+        private const val MAX_FILE_BYTES = 20L * 1024 * 1024  // 20 MB
     }
 
     override fun isLoggable(tag: String?, priority: Int): Boolean = priority >= minPriority
@@ -66,7 +66,8 @@ class FileLoggingTree(
             else        -> "?"
         }
         val timestamp = dateFmt.format(Date())
-        val line = "$timestamp $level/$tag: $message"
+        val thread = Thread.currentThread().name
+        val line = "$timestamp $level/$tag [thread=$thread]: $message"
         val stackTrace = t?.stackTraceToString()
 
         ioExecutor.execute {

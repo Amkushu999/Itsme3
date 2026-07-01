@@ -47,8 +47,11 @@ object SurfaceRouter : FFmpegDecoder.FrameCallback {
 
     private val frameSeq = AtomicLong(0L)
 
-    // sessionId → list of per-surface push threads
-    private val sessions: ConcurrentHashMap<String, List<SurfaceFeedThread>> = ConcurrentHashMap()
+    // sessionId → list of per-surface push threads (Binder mode)
+      private val sessions: ConcurrentHashMap<String, List<SurfaceFeedThread>> = ConcurrentHashMap()
+
+      // sessionId → list of socket feed threads (Unix socket / Mochi Cloner fallback)
+      private val socketSessions: ConcurrentHashMap<String, MutableList<SocketFeedThread>> = ConcurrentHashMap()
 
     // ── FFmpegDecoder.FrameCallback ───────────────────────────────────────────
 
@@ -80,9 +83,13 @@ object SurfaceRouter : FFmpegDecoder.FrameCallback {
         val frame = MasterFrame(yCopy, uCopy, vCopy, width, height, seq)
 
         // Offer to every surface thread — non-blocking, drops old frame if not consumed
-        sessions.values.forEach { threads ->
-            threads.forEach { it.offerFrame(frame) }
-        }
+          sessions.values.forEach { threads ->
+              threads.forEach { it.offerFrame(frame) }
+          }
+          // Offer to socket-mode feed threads (Mochi Cloner fallback)
+          socketSessions.values.forEach { threads ->
+              threads.forEach { it.offerFrame(frame) }
+          }
     }
 
     override fun onError(code: Int, msg: String) {
@@ -134,8 +141,47 @@ object SurfaceRouter : FFmpegDecoder.FrameCallback {
 
     fun unregisterAll() {
         sessions.keys.toList().forEach { unregisterSession(it) }
+        socketSessions.keys.toList().forEach { unregisterSocketSession(it) }
         frameSeq.set(0L)
     }
+      // ── Socket session management (Mochi Cloner fallback) ─────────────────────
+
+      /**
+       * Called by UnixSocketServer when the hook sends its first SURFACE line.
+       * Replaces any existing socket session with the same sessionId.
+       */
+      fun registerSocketSession(sessionId: String, specs: List<SocketSurfaceSpec>) {
+          Logger.d(Logger.ROUTER, "$TAG registerSocketSession: id=$sessionId  surfaces=${specs.size}")
+          unregisterSocketSession(sessionId)
+          val threads = specs.map { spec ->
+              SocketFeedThread(sessionId, spec).also { it.start() }
+          }
+          socketSessions[sessionId] = threads.toMutableList()
+      }
+
+      /**
+       * Called by UnixSocketServer each time a data socket for a surface index
+       * successfully connects. Adds a [SocketFeedThread] to the session.
+       */
+      fun addSocketSurface(sessionId: String, spec: SocketSurfaceSpec) {
+          Logger.d(Logger.ROUTER, "$TAG addSocketSurface: id=$sessionId  index=${spec.index}  ${spec.width}x${spec.height}")
+          socketSessions.getOrPut(sessionId) { mutableListOf() }
+              .add(SocketFeedThread(sessionId, spec).also { it.start() })
+      }
+
+      fun unregisterSocketSession(sessionId: String) {
+          Logger.d(Logger.ROUTER, "$TAG unregisterSocketSession: $sessionId")
+          socketSessions.remove(sessionId)?.forEach { it.stopThread() }
+      }
+
+      /** Describes one surface the hook needs frames for (socket transport). */
+      data class SocketSurfaceSpec(
+          val index: Int,
+          val width: Int,
+          val height: Int,
+          val format: Int,
+          val outputStream: java.io.DataOutputStream
+      )
 }
 
 // ── Per-surface push thread ───────────────────────────────────────────────────
@@ -372,3 +418,87 @@ private class SurfaceFeedThread(
         }
     }
 }
+
+  // ── Socket-mode per-surface push thread ──────────────────────────────────────
+  // Mirrors SurfaceFeedThread but writes [4-byte len][raw bytes] to a
+  // DataOutputStream instead of an ImageWriter. The hook reads and fills
+  // its locally-held Surface.
+
+  private class SocketFeedThread(
+      private val sessionId: String,
+      private val spec: SurfaceRouter.SocketSurfaceSpec
+  ) : Thread("SocketFeed-${sessionId.take(8)}-${spec.width}x${spec.height}") {
+
+      @Volatile private var running = true
+      private val queue = java.util.concurrent.LinkedBlockingQueue<SurfaceRouter.MasterFrame>(1)
+
+      private val outputBuf: java.nio.ByteBuffer =
+          java.nio.ByteBuffer.allocateDirect(LibYuv.outputSize(spec.width, spec.height, spec.format))
+
+      init {
+          isDaemon = true
+          priority = MAX_PRIORITY - 1
+      }
+
+      fun offerFrame(frame: SurfaceRouter.MasterFrame) {
+          queue.poll()
+          queue.offer(frame)
+      }
+
+      fun stopThread() {
+          running = false
+          queue.offer(SurfaceRouter.MasterFrame(
+              java.nio.ByteBuffer.allocate(0), java.nio.ByteBuffer.allocate(0), java.nio.ByteBuffer.allocate(0),
+              0, 0, Long.MIN_VALUE
+          ))
+          runCatching { spec.outputStream.close() }
+      }
+
+      override fun run() {
+          Logger.d("SocketFeed[$sessionId] started ${spec.width}x${spec.height} fmt=${spec.format}")
+          while (running) {
+              val frame = try {
+                  queue.poll(300, java.util.concurrent.TimeUnit.MILLISECONDS)
+              } catch (_: InterruptedException) { break } ?: continue
+
+              if (frame.seq == Long.MIN_VALUE) break
+              pushFrame(frame)
+          }
+          runCatching { spec.outputStream.close() }
+          Logger.d("SocketFeed[$sessionId] stopped")
+      }
+
+      private fun pushFrame(frame: SurfaceRouter.MasterFrame) {
+          try {
+              outputBuf.clear()
+              val y = frame.y.duplicate().apply { rewind() }
+              val u = frame.u.duplicate().apply { rewind() }
+              val v = frame.v.duplicate().apply { rewind() }
+
+              val rc = LibYuv.convertInto(
+                  y, u, v,
+                  frame.width, frame.height,
+                  frame.width, (frame.width + 1) / 2, (frame.width + 1) / 2,
+                  spec.width, spec.height, spec.format,
+                  outputBuf
+              )
+              if (rc != 0) {
+                  Logger.e("SocketFeed LibYuv.convertInto rc=$rc (${LibYuv.getErrorMessage(rc)})")
+                  return
+              }
+              outputBuf.flip()
+
+              val len   = outputBuf.remaining()
+              val bytes = ByteArray(len)
+              outputBuf.get(bytes)
+
+              spec.outputStream.writeInt(len)
+              spec.outputStream.write(bytes)
+              spec.outputStream.flush()
+          } catch (e: Throwable) {
+              if (running) Logger.e("SocketFeed[$sessionId] pushFrame: ${e.message}")
+              running = false
+          }
+      }
+  }
+  
