@@ -95,9 +95,6 @@ object SharedPrefs {
 
     fun setTargetPackage(packageName: String?) {
         p?.edit { putString(KEY_TARGET_PACKAGE, packageName) }
-        // Also write to external storage so the hook can read it inside Mochi Cloner's
-        // virtual environment (TT_Xposed virtualizes normal SharedPrefs/XSharedPreferences).
-        ExternalConfig.write(KEY_TARGET_PACKAGE, packageName)
     }
 
     fun getTargetAppName(): String? = p?.getString(KEY_TARGET_APP_NAME, null)
@@ -111,7 +108,6 @@ object SharedPrefs {
             remove(KEY_TARGET_PACKAGE)
             remove(KEY_TARGET_APP_NAME)
         }
-        ExternalConfig.write(KEY_TARGET_PACKAGE, null)
     }
 
     // ==================== STREAM ====================

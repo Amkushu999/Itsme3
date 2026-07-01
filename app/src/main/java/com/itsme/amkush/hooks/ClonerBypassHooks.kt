@@ -13,11 +13,6 @@ import java.io.File
 object ClonerBypassHooks {
 
     private val clonerPaths = listOf(
-        // com.jy.x.separation.manager is Mochi Cloner's REAL package name (discovered from
-        // device logs). The old "com.mochi.cloner" alias also kept for older versions.
-        "/data/data/com.jy.x.separation.manager",
-        "/data/user/0/com.jy.x.separation.manager",
-        "/data/user_de/0/com.jy.x.separation.manager",
         "/data/data/com.mochi.cloner",
         "/data/data/com.lbe.parallel.intl",
         "/data/data/com.parallel.space",
@@ -50,9 +45,6 @@ object ClonerBypassHooks {
     )
 
     private val clonerPackages = listOf(
-        // Mochi Cloner's real package name discovered from live device logs.
-        // The old "com.mochi.cloner" alias is kept for older app versions.
-        "com.jy.x.separation.manager",
         "com.mochi.cloner",
         "com.lbe.parallel.intl",
         "com.parallel.space",
