@@ -97,7 +97,7 @@ package com.itsme.amkush.ipc
                   when {
                       line.startsWith("SURFACE ") -> {
                           // "SURFACE 0 width=1080 height=1920 fmt=17"
-                          val parts  = line.trim().split("\s+".toRegex())
+                          val parts  = line.trim().split(" ")
                           val index  = parts[1].toInt()
                           val w      = parts[2].removePrefix("width=").toInt()
                           val h      = parts[3].removePrefix("height=").toInt()
