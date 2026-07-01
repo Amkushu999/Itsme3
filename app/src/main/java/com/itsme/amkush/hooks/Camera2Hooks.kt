@@ -693,7 +693,7 @@ object Camera2Hooks {
 
     private fun allocateFakeCaptureRequestBuilder(classLoader: ClassLoader): Any? = try {
         val cls = XposedHelpers.findClass(
-            "android.hardware.camera2.CaptureRequest$Builder", classLoader
+            "android.hardware.camera2.CaptureRequest\$Builder", classLoader
         )
         val f = Class.forName("sun.misc.Unsafe").getDeclaredField("theUnsafe")
         f.isAccessible = true
