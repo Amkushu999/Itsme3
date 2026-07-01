@@ -3,6 +3,7 @@ package com.itsme.amkush.ipc
   import android.content.ContentValues
   import android.content.Context
   import android.net.Uri
+  import com.itsme.amkush.utils.ExternalConfig
   import com.itsme.amkush.utils.Logger
 
   /**
@@ -36,6 +37,10 @@ package com.itsme.amkush.ipc
       // ──────────────────────────────────────────────────────────────
 
       fun write(context: Context, key: String, value: String?) {
+          // Mirror every write to external storage so the hook can read config inside
+          // Mochi Cloner's virtual environment (TT_Xposed) where ContentProvider and
+          // XSharedPreferences are both intercepted or virtualized.
+          ExternalConfig.write(key, value)
           try {
               val cv = ContentValues().apply {
                   put(FaceGateIpcProvider.COL_KEY, key)
@@ -109,6 +114,7 @@ package com.itsme.amkush.ipc
           setInjectionActive(context, false)
           setStreamUrl(context, null)
           setMediaUri(context, null)
+          ExternalConfig.clearAll()
       }
   }
   

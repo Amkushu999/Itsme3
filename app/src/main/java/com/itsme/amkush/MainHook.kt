@@ -10,6 +10,7 @@ package com.itsme.amkush
   import de.robv.android.xposed.callbacks.XC_LoadPackage
   import com.itsme.amkush.hooks.*
   import android.util.Log
+import com.itsme.amkush.utils.ExternalConfig
 import com.itsme.amkush.utils.Logger
 
   class MainHook : IXposedHookLoadPackage {
@@ -165,31 +166,45 @@ import com.itsme.amkush.utils.Logger
       } catch (_: Throwable) { null }
 
       /**
-       * Resolve a config string from the module using a three-layer fallback strategy.
+       * Resolve a config string from the module using a four-layer fallback strategy.
        *
-       * Layer 0 — XSharedPreferences (NEW — primary fix for Mochi Cloner):
-       *   XSharedPreferences reads the module's preference file DIRECTLY from disk
-       *   using the Xposed framework's privileged file access. It bypasses Android's
-       *   normal IPC entirely, so it works even when the hook is running inside
-       *   Mochi Cloner's virtual environment where the module app (com.itsme.amkush)
-       *   is NOT cloned and therefore cannot be reached via createPackageContext or
-       *   ContentProvider from inside the clone.
+       * Layer 0 — ExternalConfig (sdcard file — primary fix for Mochi Cloner / TT_Xposed):
+       *   Reads a plain .properties file from /sdcard/Android/media/com.itsme.amkush/.
        *
-       *   This is why the logs showed `target=mnop.qrst.uvwx.yzab` (a garbage/null
-       *   read) — the other two layers were both failing silently inside Mochi.
+       *   WHY: Mochi Cloner (com.jy.x.separation.manager) runs its own built-in Xposed
+       *   engine called TT_Xposed. TT_Xposed virtualizes the file system inside the clone,
+       *   so XSharedPreferences reads from Mochi's fake virtualized prefs and returns
+       *   garbage like "mnop.qrst.uvwx.yzab" instead of our real target package name.
+       *   ContentProvider and createPackageContext are similarly broken inside TT_Xposed.
        *
-       * Layer 1 — ContentProvider:
-       *   Fast when InjectionService is running on a standard (non-cloned) system.
+       *   Mochi does NOT virtualize /sdcard — it is real shared external storage.
+       *   A plain File.readText() is a kernel syscall that TT_Xposed cannot intercept.
+       *   The module UI writes to this file when the user saves config. The hook reads it.
+       *   No IPC, no timing dependency, no virtualization issues.
        *
-       * Layer 2 — createPackageContext SharedPreferences:
-       *   Fallback for standard rooted phones and emulators without cloners.
+       * Layer 1 — XSharedPreferences:
+       *   Works with real LSPosed on standard rooted phones. Skipped inside TT_Xposed
+       *   (returns virtualized garbage). Kept as fallback for non-Mochi environments.
+       *
+       * Layer 2 — ContentProvider:
+       *   Fast when InjectionService is running on a standard rooted device.
+       *
+       * Layer 3 — createPackageContext SharedPreferences:
+       *   Last resort for standard rooted phones and emulators without cloners.
        */
       private fun resolveModuleString(ctx: Context, key: String): String? {
-          // Layer 0: XSharedPreferences — works across the Mochi Cloner boundary.
-          // The hook code injected into Firefox (inside Mochi) can read the module's
-          // real preference files on the host system via Xposed's privileged disk access.
-          // makeWorldReadable() is called defensively; LSPosed handles permissions via
-          // SELinux policy so this is safe and does not expose data to other apps.
+          // Layer 0: ExternalConfig — plain file on /sdcard, survives all virtual environments.
+          // Written by SharedPrefs.setTargetPackage() and RemoteConfig.write() on the real system.
+          // Read here with plain File I/O — no XSharedPreferences, no ContentProvider, no IPC.
+          val extValue = ExternalConfig.read(key)
+          if (!extValue.isNullOrEmpty()) {
+              Logger.d("resolveModuleString: ExternalConfig → $key=$extValue")
+              return extValue
+          }
+
+          // Layer 1: XSharedPreferences — works with real LSPosed, fails inside TT_Xposed/Mochi.
+          // makeWorldReadable() is a no-op on LSPosed (SELinux policy handles access) but kept
+          // for compatibility with older Xposed frameworks on rooted phones/emulators.
           for (prefsName in listOf("facegate_ipc", "facegate_prefs", "saved_settings")) {
               try {
                   val xprefs = XSharedPreferences("com.itsme.amkush", prefsName)
@@ -201,11 +216,11 @@ import com.itsme.amkush.utils.Logger
                       return value
                   }
               } catch (_: Throwable) {
-                  // XSharedPreferences not available in this environment — continue
+                  // Not available in this environment — continue to next layer
               }
           }
 
-          // Layer 1: ContentProvider (fastest on standard rooted phones when InjectionService is running)
+          // Layer 2: ContentProvider — fast on standard rooted devices with InjectionService running.
           try {
               val uri = Uri.parse("content://com.itsme.amkush.ipc/config/$key")
               ctx.contentResolver.query(uri, null, null, null, null)?.use { c ->
@@ -218,7 +233,7 @@ import com.itsme.amkush.utils.Logger
               Logger.d("resolveModuleString: ContentProvider unavailable for $key")
           }
 
-          // Layer 2: Direct SharedPreferences via createPackageContext (standard rooted / emulator)
+          // Layer 3: Direct SharedPreferences via createPackageContext (standard rooted / emulator).
           return openModulePrefs(ctx, "facegate_ipc")?.getString(key, null)
               ?: openModulePrefs(ctx, "facegate_prefs")?.getString(key, null)
       }
