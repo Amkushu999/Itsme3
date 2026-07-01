@@ -91,7 +91,9 @@ object CameraXHooks {
                 }
             )
         } catch (e: Throwable) {
-            Logger.e("$TAG setAnalyzer hook failed", e)
+            // ClassNotFoundError is expected for apps that don't bundle CameraX (e.g. Firefox).
+            // Treat identically to the Builder / bindToLifecycle hooks — DEBUG, not ERROR.
+            Logger.d(Logger.HOOK, "$TAG setAnalyzer hook skipped (class not found): ${e.message}")
         }
     }
 

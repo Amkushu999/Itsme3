@@ -98,8 +98,11 @@ object Camera2Hooks {
 
         val trackSurface = fun(reader: Any?, w: Int, h: Int, fmt: Int) {
             try {
-                val surface = reader?.javaClass?.getMethod("getSurface")?.invoke(reader)
-                    as? Surface ?: return
+                // Direct cast avoids Method.invoke() which TT_Xposed's LSPHooker_ intercepts.
+                // Using reflection here caused infinite hook recursion (StackOverflow) inside
+                // Mochi Cloner's TT_Xposed engine: Method.invoke() → LSPHooker_ → HookInfo.callback
+                // → our afterHookedMethod → Method.invoke() → ... (unbounded loop).
+                val surface = (reader as? android.media.ImageReader)?.surface ?: return
                 surfaceDimensions[surface] = Triple(w, h, fmt)
                 Logger.d("$TAG ImageReader surface tracked: ${w}x${h} fmt=$fmt")
             } catch (e: Throwable) {
@@ -224,9 +227,11 @@ object Camera2Hooks {
                         val w = param.args[0] as Int
                         val h = param.args[1] as Int
                         try {
-                            val surface = param.thisObject.javaClass
-                                .getMethod("getSurface").invoke(param.thisObject)
-                                    as? Surface ?: return
+                            // Direct cast avoids Method.invoke() which TT_Xposed's LSPHooker_
+                            // intercepts, causing infinite hook recursion (StackOverflow) inside
+                            // Mochi Cloner. Use SurfaceHolder interface dispatch instead.
+                            val surface = (param.thisObject as? android.view.SurfaceHolder)
+                                ?.surface ?: return
                             surfaceDimensions[surface] = Triple(w, h, ImageFormat.YUV_420_888)
                             Logger.d("$TAG SurfaceHolder.setFixedSize tracked: ${w}x${h}")
                         } catch (_: Throwable) {}

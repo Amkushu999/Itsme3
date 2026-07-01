@@ -379,7 +379,9 @@ object ExifSpoofHooks {
             )
 
         } catch (e: Throwable) {
-            Logger.e(Logger.HOOK, "ExifInterface.hasThumbnail hook failed", e)
+            // NoSuchMethodError is expected for apps whose bundled ExifInterface version does
+            // not expose hasThumbnail() — treat as a skipped hook, not an error.
+            Logger.d(Logger.HOOK, "ExifInterface.hasThumbnail hook skipped: ${e.message}")
         }
     }
 
@@ -411,7 +413,9 @@ object ExifSpoofHooks {
             )
 
         } catch (e: Throwable) {
-            Logger.e(Logger.HOOK, "ExifInterface.getThumbnail hook failed", e)
+            // NoSuchMethodError is expected for apps whose bundled ExifInterface version does
+            // not expose getThumbnail() / getThumbnailBitmap() — treat as skipped, not error.
+            Logger.d(Logger.HOOK, "ExifInterface.getThumbnail hook skipped: ${e.message}")
         }
     }
 
