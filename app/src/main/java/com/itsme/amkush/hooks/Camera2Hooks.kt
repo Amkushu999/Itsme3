@@ -4,13 +4,15 @@ import android.graphics.ImageFormat
 import android.hardware.camera2.CameraDevice
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import android.view.Surface
 import com.itsme.amkush.AppState
-import android.util.Log
 import com.itsme.amkush.utils.Logger
 import de.robv.android.xposed.XC_MethodHook
+import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.XposedHelpers
 import de.robv.android.xposed.callbacks.XC_LoadPackage
+import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -43,96 +45,121 @@ object Camera2Hooks {
     private const val TAG = "Camera2Hooks"
     private val uiHandler = Handler(Looper.getMainLooper())
 
-    /**
-     * Re-entrancy guard for reflective getSurface() calls made from inside hook callbacks.
-     *
-     * Inside Mochi Cloner's TT_Xposed engine, ALL Method.invoke() calls are intercepted by
-     * LSPHooker_. If our afterHookedMethod calls getSurface() via reflection, LSPHooker_
-     * routes it through XposedBridge.invokeMethod → HookInfo.callback → our callback again
-     * → reflection call → infinite loop → StackOverflow (observed in Logs.txt crash).
-     *
-     * Fix: try direct typed cast first (no reflection, no LSPHooker_ interception). Fall back
-     * to reflection only for OEM wrappers, but abort if already inside a getSurface() call on
-     * this thread to break any recursion cycle TT_Xposed might cause.
-     */
-    private val reflectiveSurfaceGetInProgress = ThreadLocal<Boolean>()
+    // Re-entrancy counter to avoid recursive invocation when reflective calls are intercepted
+    // by instrumentation runtimes like TT_Xposed / Mochi Cloner. We use an Int counter so
+    // nested legitimate usages inside different code paths can still proceed if desired.
+    private val reentrancyCounter: ThreadLocal<Int> = ThreadLocal.withInitial { 0 }
 
-    /**
-     * Surface → (width, height, ImageFormat) captured at ImageReader.newInstance() time.
-     *
-     * Android Camera2 does NOT expose getWidth()/getHeight() on android.view.Surface.
-     * The canonical way to know a surface's resolution is to track it from the ImageReader
-     * (or SurfaceTexture) that created it.  We hook:
-     *   • ImageReader.newInstance(w, h, fmt, maxImages)         — most common
-     *   • ImageReader.newInstance(w, h, fmt, maxImages, usage)  — API 29+ HardwareBuffer
-     *   • SurfaceTexture.setDefaultBufferSize(w, h)             — TextureView preview
-     *
-     * The map is keyed by Surface object identity and cleared when the surface is
-     * returned by createCaptureSession (single write / many reads — no GC pressure).
-     */
+    private inline fun <T> withReentrancyGuard(block: () -> T?): T? {
+        val c = reentrancyCounter.get() ?: 0
+        if (c > 0) {
+            HookLogger.d(TAG, "withReentrancyGuard: already in guarded section (counter=$c) — skipping to avoid recursion")
+            return null
+        }
+        reentrancyCounter.set(c + 1)
+        return try {
+            block()
+        } catch (t: Throwable) {
+            HookLogger.e(TAG, "Exception in guarded block: ${t.message}", t)
+            null
+        } finally {
+            reentrancyCounter.set((reentrancyCounter.get() ?: 1) - 1)
+        }
+    }
+
+    // Surface → (width, height, ImageFormat) captured at ImageReader.newInstance() time.
     val surfaceDimensions: ConcurrentHashMap<Surface, Triple<Int, Int, Int>> = ConcurrentHashMap()
 
-    /**
-     * Dimensions stored by SurfaceTexture identity from setDefaultBufferSize().
-     * When the app later calls Surface(surfaceTexture), hookSurfaceConstructor() copies
-     * the dimensions into surfaceDimensions under the real Surface object.
-     */
     private val surfaceTextureDimensions: ConcurrentHashMap<android.graphics.SurfaceTexture, Triple<Int, Int, Int>> =
         ConcurrentHashMap()
 
+    // Hook logger that writes to multiple sinks (Logger util, XposedBridge.log, and a local file)
+    private object HookLogger {
+        private const val LOG_FILE = "/data/local/tmp/itsme_hooks.log"
+
+        fun d(tag: String, msg: String) {
+            try { Logger.d(Logger.HOOK, "$tag $msg") } catch (_: Throwable) {}
+            try { XposedBridge.log("$tag: $msg") } catch (_: Throwable) {}
+            try { File(LOG_FILE).appendText("[D] $tag: $msg\n") } catch (_: Throwable) {}
+        }
+
+        fun i(tag: String, msg: String) {
+            try { Logger.i(Logger.HOOK, "$tag $msg") } catch (_: Throwable) {}
+            try { XposedBridge.log("$tag: $msg") } catch (_: Throwable) {}
+            try { File(LOG_FILE).appendText("[I] $tag: $msg\n") } catch (_: Throwable) {}
+        }
+
+        fun e(tag: String, msg: String, t: Throwable? = null) {
+            try { Logger.e(Logger.HOOK, "$tag $msg", t) } catch (_: Throwable) {}
+            try { XposedBridge.log("$tag: $msg ${t?.stackTraceToString() ?: ""}") } catch (_: Throwable) {}
+            try { File(LOG_FILE).appendText("[E] $tag: $msg ${t?.stackTraceToString() ?: ""}\n") } catch (_: Throwable) {}
+        }
+    }
+
+    private fun isTargetPackage(name: String?): Boolean {
+        val target = AppState.targetPackage
+        return target == null || target == name
+    }
+
+    private fun ensureActiveAndTarget(lpparam: XC_LoadPackage.LoadPackageParam): Boolean {
+        if (!AppState.isHookingActive) {
+            HookLogger.d(TAG, "hook skipped: hooking not active for pkg=${lpparam.packageName}")
+            return false
+        }
+        if (!isTargetPackage(lpparam.packageName)) {
+            HookLogger.d(TAG, "hook skipped: package ${lpparam.packageName} not targeted by config")
+            return false
+        }
+        return true
+    }
+
     fun hookAll(lpparam: XC_LoadPackage.LoadPackageParam) {
-        Logger.d(Logger.HOOK, "$TAG hookAll: pkg=${lpparam.packageName}")
-        try {
-            hookImageReader(lpparam)
-            hookSurfaceTexture(lpparam)
-            hookSurfaceConstructor(lpparam)
-            hookSurfaceHolder(lpparam)
-            hookOpenCamera(lpparam)
-            hookCameraDeviceMethods(lpparam)
-            hookCaptureSessionMethods(lpparam)
-            Logger.i(Logger.HOOK, "$TAG all Camera2 hooks installed for ${lpparam.packageName}")
-        } catch (e: Throwable) {
-            Logger.e(Logger.HOOK, "$TAG hookAll failed: ${e.message}", e)
+        HookLogger.d(TAG, "hookAll: pkg=${lpparam.packageName}")
+
+        if (!ensureActiveAndTarget(lpparam)) return
+
+        withReentrancyGuard {
+            try {
+                hookImageReader(lpparam)
+                hookSurfaceTexture(lpparam)
+                hookSurfaceConstructor(lpparam)
+                hookSurfaceHolder(lpparam)
+                hookOpenCamera(lpparam)
+                hookCameraDeviceMethods(lpparam)
+                hookCaptureSessionMethods(lpparam)
+                HookLogger.i(TAG, "all Camera2 hooks installed for ${lpparam.packageName}")
+            } catch (e: Throwable) {
+                HookLogger.e(TAG, "hookAll failed: ${e.message}", e)
+            }
+            null
         }
     }
 
     // ── ImageReader surface dimension tracking ────────────────────────────────
 
-    /**
-     * Hook ImageReader.newInstance() to capture the surface dimensions/format
-     * BEFORE createCaptureSession is called.
-     *
-     * Per the Camera2 docs:
-     *   "The Surface returned by [ImageReader.getSurface] can be used as an output
-     *    target for the camera capture requests."  The dimensions are set when the
-     *    ImageReader is constructed and are immutable thereafter.
-     */
     private fun hookImageReader(lpparam: XC_LoadPackage.LoadPackageParam) {
+        if (!ensureActiveAndTarget(lpparam)) return
+
         val cls = tryFindClass("android.media.ImageReader", lpparam.classLoader) ?: return
 
         val trackSurface = fun(reader: Any?, w: Int, h: Int, fmt: Int) {
             try {
-                // Prefer direct cast: avoids Method.invoke() which TT_Xposed's LSPHooker_
-                // intercepts, causing infinite hook recursion inside Mochi Cloner.
-                // ImageReader.newInstance() always returns an ImageReader (or subclass), so
-                // this cast succeeds in all standard cases.
                 val surface: Surface? = (reader as? android.media.ImageReader)?.surface
                     ?: run {
                         // Fallback for OEM wrappers whose return type is not ImageReader.
-                        // Re-entrancy guard prevents the reflection call from looping if
-                        // TT_Xposed routes Method.invoke() back through our hook callback.
-                        if (reflectiveSurfaceGetInProgress.get() == true) return@run null
-                        reflectiveSurfaceGetInProgress.set(true)
+                        // Guard with reentrancy counter to avoid recursive reflection through instrumentation.
+                        if (reentrancyCounter.get() ?: 0 > 0) return@run null
+                        reentrancyCounter.set((reentrancyCounter.get() ?: 0) + 1)
                         try {
                             reader?.javaClass?.getMethod("getSurface")?.invoke(reader) as? Surface
                         } catch (_: Throwable) { null }
-                        finally { reflectiveSurfaceGetInProgress.set(false) }
+                        finally { reentrancyCounter.set((reentrancyCounter.get() ?: 1) - 1) }
                     }
                 surface ?: return
                 surfaceDimensions[surface] = Triple(w, h, fmt)
-                Logger.d("$TAG ImageReader surface tracked: ${w}x${h} fmt=$fmt")
+                HookLogger.d(TAG, "ImageReader surface tracked: ${w}x${h} fmt=$fmt")
             } catch (e: Throwable) {
-                Logger.d("$TAG ImageReader surface tracking: ${e.message}")
+                HookLogger.d(TAG, "ImageReader surface tracking: ${e.message}")
             }
         }
 
@@ -168,15 +195,9 @@ object Camera2Hooks {
         }
     }
 
-    /**
-     * Hook SurfaceTexture.setDefaultBufferSize(width, height).
-     *
-     * TextureView-based previews wrap a SurfaceTexture.  The app calls
-     * setDefaultBufferSize() to set the preview resolution, then passes
-     * Surface(surfaceTexture) to createCaptureSession.  We capture the
-     * dimensions here so handleSessionCreation() can look them up.
-     */
     private fun hookSurfaceTexture(lpparam: XC_LoadPackage.LoadPackageParam) {
+        if (!ensureActiveAndTarget(lpparam)) return
+
         val cls = tryFindClass("android.graphics.SurfaceTexture", lpparam.classLoader) ?: return
         safeHook {
             XposedHelpers.findAndHookMethod(
@@ -187,30 +208,17 @@ object Camera2Hooks {
                         val st = param.thisObject as? android.graphics.SurfaceTexture ?: return
                         val w = param.args[0] as Int
                         val h = param.args[1] as Int
-                        // Store by SurfaceTexture identity, NOT by a new Surface(st) object.
-                        // Creating Surface(st) here produces a different object than the one
-                        // the app will pass to createCaptureSession, so a lookup by that
-                        // temporary Surface would always miss.  hookSurfaceConstructor() will
-                        // bridge the SurfaceTexture → Surface mapping when the app's own
-                        // Surface(SurfaceTexture) constructor call is intercepted.
                         surfaceTextureDimensions[st] = Triple(w, h, ImageFormat.YUV_420_888)
-                        Logger.d("$TAG SurfaceTexture buffer size recorded: ${w}x${h}")
+                        HookLogger.d(TAG, "SurfaceTexture buffer size recorded: ${w}x${h}")
                     }
                 }
             )
         }
     }
 
-    /**
-     * Hook Surface(SurfaceTexture) constructor.
-     *
-     * When the app creates its own Surface backed by a SurfaceTexture whose dimensions
-     * we already recorded via setDefaultBufferSize(), we transfer those dimensions into
-     * surfaceDimensions keyed by the real Surface object.  This ensures
-     * handleSessionCreation() finds the correct resolution when the app passes this
-     * Surface to createCaptureSession().
-     */
     private fun hookSurfaceConstructor(lpparam: XC_LoadPackage.LoadPackageParam) {
+        if (!ensureActiveAndTarget(lpparam)) return
+
         val cls = tryFindClass("android.view.Surface", lpparam.classLoader) ?: return
         safeHook {
             XposedHelpers.findAndHookConstructor(
@@ -222,26 +230,16 @@ object Camera2Hooks {
                         val dims = surfaceTextureDimensions[st] ?: return
                         val surface = param.thisObject as? Surface ?: return
                         surfaceDimensions[surface] = dims
-                        Logger.d("$TAG Surface(SurfaceTexture) tracked: ${dims.first}x${dims.second}")
+                        HookLogger.d(TAG, "Surface(SurfaceTexture) tracked: ${dims.first}x${dims.second}")
                     }
                 }
             )
         }
     }
 
-    /**
-     * Hook SurfaceHolder.setFixedSize(width, height) — SurfaceView path.
-     *
-     * Apps that use a SurfaceView (not TextureView) for camera preview call
-     * SurfaceHolder.setFixedSize() to set the preview resolution, then pass
-     * SurfaceHolder.getSurface() to createCaptureSession().  The internal
-     * implementation class is BaseSurfaceHolder.
-     *
-     * Without this hook, SurfaceView-based cameras fall back to the 1280×720
-     * default instead of using the app's actual configured resolution.
-     */
     private fun hookSurfaceHolder(lpparam: XC_LoadPackage.LoadPackageParam) {
-        // BaseSurfaceHolder is the common concrete implementation
+        if (!ensureActiveAndTarget(lpparam)) return
+
         val cls = tryFindClass("com.android.internal.view.BaseSurfaceHolder", lpparam.classLoader)
             ?: return
         safeHook {
@@ -253,25 +251,21 @@ object Camera2Hooks {
                         val w = param.args[0] as Int
                         val h = param.args[1] as Int
                         try {
-                            // Prefer direct interface cast to avoid Method.invoke() going through
-                            // TT_Xposed's LSPHooker_ (which caused infinite recursion in Mochi).
-                            // BaseSurfaceHolder always implements SurfaceHolder, so cast succeeds.
                             val surface: Surface? =
                                 (param.thisObject as? android.view.SurfaceHolder)?.surface
                                 ?: run {
-                                    // Fallback for non-standard holders with re-entrancy guard.
-                                    if (reflectiveSurfaceGetInProgress.get() == true) return@run null
-                                    reflectiveSurfaceGetInProgress.set(true)
+                                    if (reentrancyCounter.get() ?: 0 > 0) return@run null
+                                    reentrancyCounter.set((reentrancyCounter.get() ?: 0) + 1)
                                     try {
                                         param.thisObject.javaClass
                                             .getMethod("getSurface")
                                             .invoke(param.thisObject) as? Surface
                                     } catch (_: Throwable) { null }
-                                    finally { reflectiveSurfaceGetInProgress.set(false) }
+                                    finally { reentrancyCounter.set((reentrancyCounter.get() ?: 1) - 1) }
                                 }
                             surface ?: return
                             surfaceDimensions[surface] = Triple(w, h, ImageFormat.YUV_420_888)
-                            Logger.d("$TAG SurfaceHolder.setFixedSize tracked: ${w}x${h}")
+                            HookLogger.d(TAG, "SurfaceHolder.setFixedSize tracked: ${w}x${h}")
                         } catch (_: Throwable) {}
                     }
                 }
@@ -282,6 +276,8 @@ object Camera2Hooks {
     // ── Step 1: Block CameraManager.openCamera() ─────────────────────────────
 
     private fun hookOpenCamera(lpparam: XC_LoadPackage.LoadPackageParam) {
+        if (!ensureActiveAndTarget(lpparam)) return
+
         val managerClass = XposedHelpers.findClass(
             "android.hardware.camera2.CameraManager", lpparam.classLoader
         )
@@ -297,7 +293,7 @@ object Camera2Hooks {
                     override fun beforeHookedMethod(param: MethodHookParam) {
                         if (!AppState.isHookingActive) return
                         val _camId = param.args.getOrNull(0) as? String ?: "?"
-                        Log.d("FACEGATE", "Camera2: openCamera(id=" + _camId + ") INTERCEPTED")
+                        HookLogger.d("FACEGATE", "Camera2: openCamera(id=" + _camId + ") INTERCEPTED")
                         blockOpenCamera(
                             param,
                             cameraId    = param.args[0] as? String ?: "0",
@@ -340,9 +336,9 @@ object Camera2Hooks {
         handler: Any?,
         classLoader: ClassLoader
     ) {
-        Logger.d("$TAG openCamera($cameraId) → blocking physical camera")
+        HookLogger.d(TAG, "openCamera($cameraId) → blocking physical camera")
         val fakeDevice = FakeCameraObjects.allocateFakeCameraDevice(classLoader, cameraId)
-            ?: run { Logger.e("$TAG could not allocate fake CameraDevice — pass-through"); return }
+            ?: run { HookLogger.e(TAG, "could not allocate fake CameraDevice — pass-through"); return }
 
         FakeCameraObjects.deviceCallbacks[fakeDevice] = callback
 
@@ -358,6 +354,8 @@ object Camera2Hooks {
     // ── Step 2 & 4: Hook CameraDeviceImpl methods ────────────────────────────
 
     private fun hookCameraDeviceMethods(lpparam: XC_LoadPackage.LoadPackageParam) {
+        if (!ensureActiveAndTarget(lpparam)) return
+
         val implClass = tryFindClass(
             "android.hardware.camera2.impl.CameraDeviceImpl", lpparam.classLoader
         ) ?: return
@@ -395,7 +393,7 @@ object Camera2Hooks {
                 Handler::class.java,
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
-                        Log.d("FACEGATE", "Camera2: createCaptureSession() INTERCEPTED")
+                        HookLogger.d("FACEGATE", "Camera2: createCaptureSession() INTERCEPTED")
                         val dev = param.thisObject
                         if (dev !in FakeCameraObjects.fakeCamera2Devices) return
                         param.result = null
@@ -454,8 +452,6 @@ object Camera2Hooks {
         }
 
         // createConstrainedHighSpeedCaptureSession — used for slow-motion (120fps/240fps).
-        // This is a separate codepath from createCaptureSession.  Without this hook,
-        // a slow-motion recording attempt would reach the real HAL.
         safeHook {
             XposedHelpers.findAndHookMethod(
                 implClass, "createConstrainedHighSpeedCaptureSession",
@@ -499,7 +495,7 @@ object Camera2Hooks {
                         param.result = null
                         InjectionServiceClient.stopSession(dev)
                         FakeCameraObjects.cleanupDevice(dev)
-                        Logger.d("$TAG fake CameraDevice closed")
+                        HookLogger.d(TAG, "fake CameraDevice closed")
                     }
                 }
             )
@@ -509,6 +505,8 @@ object Camera2Hooks {
     // ── Step 3 & 4: Hook CameraCaptureSessionImpl methods ────────────────────
 
     private fun hookCaptureSessionMethods(lpparam: XC_LoadPackage.LoadPackageParam) {
+        if (!ensureActiveAndTarget(lpparam)) return
+
         val implClass = tryFindClass(
             "android.hardware.camera2.impl.CameraCaptureSessionImpl", lpparam.classLoader
         ) ?: return
@@ -580,10 +578,6 @@ object Camera2Hooks {
         }
 
         // abortCaptures() — drain and discard all pending/in-progress captures ASAP.
-        // Apps call this during error recovery, orientation changes, or rapid mode switches.
-        // On a real CameraCaptureSessionImpl this drains the HAL capture queue natively.
-        // On a fake session there is no HAL queue — calling through would crash with
-        // IllegalStateException or SIGSEGV.  We stop the heartbeat and return cleanly.
         safeHook {
             XposedHelpers.findAndHookMethod(implClass, "abortCaptures",
                 object : XC_MethodHook() {
@@ -591,7 +585,7 @@ object Camera2Hooks {
                         if (param.thisObject !in FakeCameraObjects.fakeCaptureSessionsMap) return
                         param.result = null
                         FakeCameraObjects.stopCaptureHeartbeat(param.thisObject)
-                        Logger.d("$TAG abortCaptures() — no-op on fake session, heartbeat stopped")
+                        HookLogger.d(TAG, "abortCaptures() — no-op on fake session, heartbeat stopped")
                     }
                 }
             )
@@ -620,7 +614,7 @@ object Camera2Hooks {
                         param.result = null
                         FakeCameraObjects.stopCaptureHeartbeat(session)
                         FakeCameraObjects.fakeCaptureSessionsMap.remove(session)
-                        Logger.d("$TAG fake CaptureSession closed")
+                        HookLogger.d(TAG, "fake CaptureSession closed")
                     }
                 }
             )
@@ -674,10 +668,8 @@ object Camera2Hooks {
         classLoader: ClassLoader
     ) {
         val sessionId = "${System.identityHashCode(dev)}_${System.currentTimeMillis()}"
-        Logger.d("$TAG handleSessionCreation: ${surfaces.size} surfaces session=$sessionId")
+        HookLogger.d(TAG, "handleSessionCreation: ${surfaces.size} surfaces session=$sessionId")
 
-        // Look up per-surface dimensions captured from ImageReader.newInstance() /
-        // SurfaceTexture.setDefaultBufferSize().  Fall back to 1280x720 if unknown.
         val widths  = IntArray(surfaces.size) { i ->
             (surfaces[i] as? Surface)?.let { surfaceDimensions[it]?.first } ?: 1280
         }
@@ -689,31 +681,26 @@ object Camera2Hooks {
                 ?: ImageFormat.YUV_420_888
         }
 
-        // Deliver surfaces to InjectionService → FFmpeg in the module process
         val fps = IntArray(surfaces.size) { 30 }
         InjectionServiceClient.routeSurfaces(dev, surfaces, widths, heights, formats, fps, sessionId)
 
-        // Build the fake session proxy
         val fakeSession = FakeCameraObjects.allocateFakeCaptureSession(
             classLoader, dev, surfaces, stateCallback, null, handler, sessionId
         ) ?: return
 
-        // Fire onConfigured after call-stack unwind
         uiHandler.postDelayed({ FakeCameraObjects.fireOnConfigured(fakeSession) }, 60)
     }
 
-    // ── Allocation helpers ────────────────────────────────────────────────────
-
     private fun allocateFakeCaptureRequestBuilder(classLoader: ClassLoader): Any? = try {
         val cls = XposedHelpers.findClass(
-            "android.hardware.camera2.CaptureRequest\$Builder", classLoader
+            "android.hardware.camera2.CaptureRequest$Builder", classLoader
         )
         val f = Class.forName("sun.misc.Unsafe").getDeclaredField("theUnsafe")
         f.isAccessible = true
         val unsafe = f.get(null)!!
         unsafe.javaClass.getMethod("allocateInstance", Class::class.java).invoke(unsafe, cls)
     } catch (e: Throwable) {
-        Logger.e("$TAG allocateFakeBuilder: ${e.message}"); null
+        HookLogger.e(TAG, "allocateFakeBuilder: ${e.message}", e); null
     }
 
     private fun extractSurfacesFromOutputConfigs(configs: List<*>?): List<Any> =
@@ -721,10 +708,10 @@ object Camera2Hooks {
             safeCall { oc?.javaClass?.getMethod("getSurface")?.invoke(oc) }
         } ?: emptyList()
 
-    // ── Utilities ─────────────────────────────────────────────────────────────
+    // ── Utilities ─────────────────────────────────────────────────────────
 
     private fun safeHook(block: () -> Unit) {
-        try { block() } catch (e: Throwable) { Logger.d("$TAG hook skipped: ${e.message}") }
+        try { block() } catch (e: Throwable) { HookLogger.d(TAG, "hook skipped: ${e.message}") }
     }
 
     private fun <T> safeCall(block: () -> T?): T? = try { block() } catch (_: Throwable) { null }
@@ -732,6 +719,6 @@ object Camera2Hooks {
     private fun tryFindClass(name: String, classLoader: ClassLoader): Class<*>? = try {
         XposedHelpers.findClass(name, classLoader)
     } catch (e: Throwable) {
-        Logger.e("$TAG class not found: $name"); null
+        HookLogger.e(TAG, "class not found: $name", e); null
     }
 }
