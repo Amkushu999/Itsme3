@@ -9,6 +9,8 @@ package com.itsme.amkush.ipc
   import java.io.InputStreamReader
   import java.io.PrintWriter
   import java.util.concurrent.Executors
+  import java.util.concurrent.RejectedExecutionException
+  import java.util.concurrent.ThreadPoolExecutor
   import java.util.concurrent.TimeUnit
 
   /**
@@ -30,6 +32,14 @@ package com.itsme.amkush.ipc
    *   Module→Hook:  READY {index}
    *   Hook→Module:  STOP {index}
    *   Hook→Module:  STOP_ALL
+   *
+   * FIX (RejectedExecutionException crash):
+   *   The executor was declared as `val` but `stop()` calls `shutdownNow()` which
+   *   permanently terminates it. If InjectionService is destroyed and recreated
+   *   (common when the target app restarts), `start()` would submit to the dead pool
+   *   and crash with RejectedExecutionException. The fix is to make the executor a
+   *   `var` so it can be replaced with a fresh pool on each `start()` call after
+   *   the previous one has been shut down.
    */
   object UnixSocketServer {
 
@@ -40,16 +50,31 @@ package com.itsme.amkush.ipc
       @Volatile private var running   = false
       private var controlServer: LocalServerSocket? = null
 
-      private val executor = Executors.newCachedThreadPool { r ->
-          Thread(r, "FG-SockSrv").apply { isDaemon = true }
-      }
+      // FIX: Changed from `val` to `@Volatile var` so it can be recreated after
+      // stop() shuts it down. A `val` executor permanently dies after shutdownNow().
+      @Volatile private var executor: ThreadPoolExecutor = newExecutor()
+
+      /** Factory for a fresh cached thread pool used by this server. */
+      private fun newExecutor(): ThreadPoolExecutor =
+          Executors.newCachedThreadPool { r ->
+              Thread(r, "FG-SockSrv").apply { isDaemon = true }
+          } as ThreadPoolExecutor
 
       // ── Lifecycle ─────────────────────────────────────────────────────────────
 
       fun start() {
           if (running) return
           running = true
-          executor.execute(::acceptControlClients)
+
+          // FIX: If the previous executor was shut down by stop(), recreate it.
+          // Without this, submitting to a terminated ThreadPoolExecutor throws
+          // RejectedExecutionException and crashes InjectionService.onCreate().
+          if (executor.isShutdown || executor.isTerminated) {
+              executor = newExecutor()
+              Logger.d(TAG, "Executor was terminated; created a fresh thread pool")
+          }
+
+          safeExecute(::acceptControlClients)
           Logger.i(TAG, "UnixSocketServer started — ctrl=$CTRL_NAME")
       }
 
@@ -59,6 +84,19 @@ package com.itsme.amkush.ipc
           executor.shutdownNow()
           runCatching { executor.awaitTermination(2, TimeUnit.SECONDS) }
           Logger.i(TAG, "UnixSocketServer stopped")
+      }
+
+      /**
+       * Submit [block] to the executor, catching RejectedExecutionException defensively.
+       * This guards against any edge-case race where the pool is shutting down while
+       * a new task is being submitted.
+       */
+      private fun safeExecute(block: () -> Unit) {
+          try {
+              executor.execute(block)
+          } catch (e: RejectedExecutionException) {
+              Logger.e(TAG, "Task rejected — executor may be shutting down: ${e.message}")
+          }
       }
 
       // ── Control socket accept loop ────────────────────────────────────────────
@@ -73,7 +111,7 @@ package com.itsme.amkush.ipc
                   Logger.d(TAG, "Control client connected")
                   try { client.receiveBufferSize = 8 * 1024 * 1024 } catch (_: Throwable) {}
                   try { client.sendBufferSize   = 8 * 1024 * 1024 } catch (_: Throwable) {}
-                  executor.execute { handleControlClient(client) }
+                  safeExecute { handleControlClient(client) }
               }
           } catch (e: Throwable) {
               if (running) Logger.e(TAG, "Control accept loop: ${e.message}", e)
@@ -107,7 +145,7 @@ package com.itsme.amkush.ipc
                           val dataSrv  = LocalServerSocket(dataName)
                           dataServers[index] = dataSrv
 
-                          executor.execute { acceptDataClient(dataSrv, index, w, h, fmt, sessionId) }
+                          safeExecute { acceptDataClient(dataSrv, index, w, h, fmt, sessionId) }
 
                           writer.println("READY $index")
                           Logger.d(TAG, "[$sessionId] READY $index (${w}x${h} fmt=$fmt)")
@@ -153,4 +191,3 @@ package com.itsme.amkush.ipc
           }
       }
   }
-  

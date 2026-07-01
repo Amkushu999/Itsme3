@@ -5,6 +5,7 @@ package com.itsme.amkush
   import android.net.Uri
   import de.robv.android.xposed.IXposedHookLoadPackage
   import de.robv.android.xposed.XC_MethodHook
+  import de.robv.android.xposed.XSharedPreferences
   import de.robv.android.xposed.XposedHelpers
   import de.robv.android.xposed.callbacks.XC_LoadPackage
   import com.itsme.amkush.hooks.*
@@ -14,6 +15,22 @@ import com.itsme.amkush.utils.Logger
   class MainHook : IXposedHookLoadPackage {
 
       override fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam) {
+          // FIX: Filter out Firefox sub-processes IMMEDIATELY before doing anything.
+          //
+          // When Firefox (or any multi-process app) boots inside Mochi Cloner it spawns
+          // 10+ child processes simultaneously (GPU, tab renderers, crash-helper, …).
+          // Every child process has a ":"-separated processName such as
+          //   org.mozilla.firefox:gpu_disable_art_image_
+          //   org.mozilla.firefox:tab_disable_art_image_37
+          // Each of those triggers handleLoadPackage, which previously tried to start
+          // InjectionService communication from every child at the same millisecond.
+          // That race caused the ThreadPoolExecutor to terminate and then receive new
+          // tasks → RejectedExecutionException crash.
+          //
+          // By returning here for any sub-process (colon in processName) or isolated
+          // process, only the MAIN Firefox process proceeds — killing the flood.
+          if (lpparam.processName.contains(":") || lpparam.processName.contains("isolated")) return
+
           if (lpparam.packageName == "android" || lpparam.packageName == "system") return
 
           Logger.init(true)
@@ -147,8 +164,48 @@ import com.itsme.amkush.utils.Logger
               .getSharedPreferences(prefsName, Context.MODE_PRIVATE)
       } catch (_: Throwable) { null }
 
+      /**
+       * Resolve a config string from the module using a three-layer fallback strategy.
+       *
+       * Layer 0 — XSharedPreferences (NEW — primary fix for Mochi Cloner):
+       *   XSharedPreferences reads the module's preference file DIRECTLY from disk
+       *   using the Xposed framework's privileged file access. It bypasses Android's
+       *   normal IPC entirely, so it works even when the hook is running inside
+       *   Mochi Cloner's virtual environment where the module app (com.itsme.amkush)
+       *   is NOT cloned and therefore cannot be reached via createPackageContext or
+       *   ContentProvider from inside the clone.
+       *
+       *   This is why the logs showed `target=mnop.qrst.uvwx.yzab` (a garbage/null
+       *   read) — the other two layers were both failing silently inside Mochi.
+       *
+       * Layer 1 — ContentProvider:
+       *   Fast when InjectionService is running on a standard (non-cloned) system.
+       *
+       * Layer 2 — createPackageContext SharedPreferences:
+       *   Fallback for standard rooted phones and emulators without cloners.
+       */
       private fun resolveModuleString(ctx: Context, key: String): String? {
-          // Layer 1: ContentProvider (fastest, works when InjectionService is running)
+          // Layer 0: XSharedPreferences — works across the Mochi Cloner boundary.
+          // The hook code injected into Firefox (inside Mochi) can read the module's
+          // real preference files on the host system via Xposed's privileged disk access.
+          // makeWorldReadable() is called defensively; LSPosed handles permissions via
+          // SELinux policy so this is safe and does not expose data to other apps.
+          for (prefsName in listOf("facegate_ipc", "facegate_prefs", "saved_settings")) {
+              try {
+                  val xprefs = XSharedPreferences("com.itsme.amkush", prefsName)
+                  @Suppress("DEPRECATION")
+                  xprefs.makeWorldReadable()
+                  val value = xprefs.getString(key, null)
+                  if (!value.isNullOrEmpty()) {
+                      Logger.d("resolveModuleString: XSharedPreferences[$prefsName] → $key=$value")
+                      return value
+                  }
+              } catch (_: Throwable) {
+                  // XSharedPreferences not available in this environment — continue
+              }
+          }
+
+          // Layer 1: ContentProvider (fastest on standard rooted phones when InjectionService is running)
           try {
               val uri = Uri.parse("content://com.itsme.amkush.ipc/config/$key")
               ctx.contentResolver.query(uri, null, null, null, null)?.use { c ->
@@ -160,7 +217,8 @@ import com.itsme.amkush.utils.Logger
           } catch (_: Throwable) {
               Logger.d("resolveModuleString: ContentProvider unavailable for $key")
           }
-          // Layer 2: Direct SharedPreferences (virtual cloner environments)
+
+          // Layer 2: Direct SharedPreferences via createPackageContext (standard rooted / emulator)
           return openModulePrefs(ctx, "facegate_ipc")?.getString(key, null)
               ?: openModulePrefs(ctx, "facegate_prefs")?.getString(key, null)
       }
