@@ -90,10 +90,16 @@ object CameraXHooks {
                     }
                 }
             )
-        } catch (e: Throwable) {
-            // ClassNotFoundError is expected for apps that don't bundle CameraX (e.g. Firefox).
-            // Treat identically to the Builder / bindToLifecycle hooks — DEBUG, not ERROR.
+        } catch (e: XposedHelpers.ClassNotFoundError) {
+            // Expected: app does not bundle CameraX (e.g. Firefox). Identical handling to
+            // hookImageAnalysisBuilder and hookCameraProviderBind — DEBUG, not ERROR.
             Logger.d(Logger.HOOK, "$TAG setAnalyzer hook skipped (class not found): ${e.message}")
+        } catch (e: NoSuchMethodError) {
+            // Expected: CameraX present but different API version — skip gracefully.
+            Logger.d(Logger.HOOK, "$TAG setAnalyzer hook skipped (method not found): ${e.message}")
+        } catch (e: Throwable) {
+            // Unexpected failure — keep as ERROR with full stack trace.
+            Logger.e("$TAG setAnalyzer hook failed", e)
         }
     }
 

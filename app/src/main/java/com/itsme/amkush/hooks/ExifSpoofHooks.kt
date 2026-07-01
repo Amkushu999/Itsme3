@@ -378,10 +378,13 @@ object ExifSpoofHooks {
                 }
             )
 
-        } catch (e: Throwable) {
-            // NoSuchMethodError is expected for apps whose bundled ExifInterface version does
-            // not expose hasThumbnail() — treat as a skipped hook, not an error.
+        } catch (e: NoSuchMethodError) {
+            // Expected: this version of ExifInterface does not expose hasThumbnail().
             Logger.d(Logger.HOOK, "ExifInterface.hasThumbnail hook skipped: ${e.message}")
+        } catch (e: XposedHelpers.ClassNotFoundError) {
+            Logger.d(Logger.HOOK, "ExifInterface.hasThumbnail hook skipped (class not found): ${e.message}")
+        } catch (e: Throwable) {
+            Logger.e(Logger.HOOK, "ExifInterface.hasThumbnail hook failed", e)
         }
     }
 
@@ -412,10 +415,13 @@ object ExifSpoofHooks {
                 }
             )
 
-        } catch (e: Throwable) {
-            // NoSuchMethodError is expected for apps whose bundled ExifInterface version does
-            // not expose getThumbnail() / getThumbnailBitmap() — treat as skipped, not error.
+        } catch (e: NoSuchMethodError) {
+            // Expected: this version of ExifInterface does not expose getThumbnail().
             Logger.d(Logger.HOOK, "ExifInterface.getThumbnail hook skipped: ${e.message}")
+        } catch (e: XposedHelpers.ClassNotFoundError) {
+            Logger.d(Logger.HOOK, "ExifInterface.getThumbnail hook skipped (class not found): ${e.message}")
+        } catch (e: Throwable) {
+            Logger.e(Logger.HOOK, "ExifInterface.getThumbnail hook failed", e)
         }
     }
 

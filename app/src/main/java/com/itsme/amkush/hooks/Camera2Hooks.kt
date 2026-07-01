@@ -44,6 +44,20 @@ object Camera2Hooks {
     private val uiHandler = Handler(Looper.getMainLooper())
 
     /**
+     * Re-entrancy guard for reflective getSurface() calls made from inside hook callbacks.
+     *
+     * Inside Mochi Cloner's TT_Xposed engine, ALL Method.invoke() calls are intercepted by
+     * LSPHooker_. If our afterHookedMethod calls getSurface() via reflection, LSPHooker_
+     * routes it through XposedBridge.invokeMethod → HookInfo.callback → our callback again
+     * → reflection call → infinite loop → StackOverflow (observed in Logs.txt crash).
+     *
+     * Fix: try direct typed cast first (no reflection, no LSPHooker_ interception). Fall back
+     * to reflection only for OEM wrappers, but abort if already inside a getSurface() call on
+     * this thread to break any recursion cycle TT_Xposed might cause.
+     */
+    private val reflectiveSurfaceGetInProgress = ThreadLocal<Boolean>()
+
+    /**
      * Surface → (width, height, ImageFormat) captured at ImageReader.newInstance() time.
      *
      * Android Camera2 does NOT expose getWidth()/getHeight() on android.view.Surface.
@@ -98,11 +112,23 @@ object Camera2Hooks {
 
         val trackSurface = fun(reader: Any?, w: Int, h: Int, fmt: Int) {
             try {
-                // Direct cast avoids Method.invoke() which TT_Xposed's LSPHooker_ intercepts.
-                // Using reflection here caused infinite hook recursion (StackOverflow) inside
-                // Mochi Cloner's TT_Xposed engine: Method.invoke() → LSPHooker_ → HookInfo.callback
-                // → our afterHookedMethod → Method.invoke() → ... (unbounded loop).
-                val surface = (reader as? android.media.ImageReader)?.surface ?: return
+                // Prefer direct cast: avoids Method.invoke() which TT_Xposed's LSPHooker_
+                // intercepts, causing infinite hook recursion inside Mochi Cloner.
+                // ImageReader.newInstance() always returns an ImageReader (or subclass), so
+                // this cast succeeds in all standard cases.
+                val surface: Surface? = (reader as? android.media.ImageReader)?.surface
+                    ?: run {
+                        // Fallback for OEM wrappers whose return type is not ImageReader.
+                        // Re-entrancy guard prevents the reflection call from looping if
+                        // TT_Xposed routes Method.invoke() back through our hook callback.
+                        if (reflectiveSurfaceGetInProgress.get() == true) return@run null
+                        reflectiveSurfaceGetInProgress.set(true)
+                        try {
+                            reader?.javaClass?.getMethod("getSurface")?.invoke(reader) as? Surface
+                        } catch (_: Throwable) { null }
+                        finally { reflectiveSurfaceGetInProgress.set(false) }
+                    }
+                surface ?: return
                 surfaceDimensions[surface] = Triple(w, h, fmt)
                 Logger.d("$TAG ImageReader surface tracked: ${w}x${h} fmt=$fmt")
             } catch (e: Throwable) {
@@ -227,11 +253,23 @@ object Camera2Hooks {
                         val w = param.args[0] as Int
                         val h = param.args[1] as Int
                         try {
-                            // Direct cast avoids Method.invoke() which TT_Xposed's LSPHooker_
-                            // intercepts, causing infinite hook recursion (StackOverflow) inside
-                            // Mochi Cloner. Use SurfaceHolder interface dispatch instead.
-                            val surface = (param.thisObject as? android.view.SurfaceHolder)
-                                ?.surface ?: return
+                            // Prefer direct interface cast to avoid Method.invoke() going through
+                            // TT_Xposed's LSPHooker_ (which caused infinite recursion in Mochi).
+                            // BaseSurfaceHolder always implements SurfaceHolder, so cast succeeds.
+                            val surface: Surface? =
+                                (param.thisObject as? android.view.SurfaceHolder)?.surface
+                                ?: run {
+                                    // Fallback for non-standard holders with re-entrancy guard.
+                                    if (reflectiveSurfaceGetInProgress.get() == true) return@run null
+                                    reflectiveSurfaceGetInProgress.set(true)
+                                    try {
+                                        param.thisObject.javaClass
+                                            .getMethod("getSurface")
+                                            .invoke(param.thisObject) as? Surface
+                                    } catch (_: Throwable) { null }
+                                    finally { reflectiveSurfaceGetInProgress.set(false) }
+                                }
+                            surface ?: return
                             surfaceDimensions[surface] = Triple(w, h, ImageFormat.YUV_420_888)
                             Logger.d("$TAG SurfaceHolder.setFixedSize tracked: ${w}x${h}")
                         } catch (_: Throwable) {}
